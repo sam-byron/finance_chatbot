@@ -97,7 +97,7 @@ def process_and_save_chunk(arg, tokenizer):
     """
     # num_workers = min(64, len(args))
     cache_path = []  # Initialize chunk_paths
-    tokenized_chunks = []
+    # tokenized_chunks = []
     
     sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
     sample_chunk = [sample["text"] + tokenizer.eos_token for sample in sample_chunk]
@@ -111,10 +111,10 @@ def process_and_save_chunk(arg, tokenizer):
     except Exception as e:
         print(f"Error tokenizing chunk {chunk_index}: {e}", flush=True)
         return None
-
-    print(f"Saving chunk {chunk_index + 1}", flush=True)
+    cache_path = os.path.join(cache_path, f"chunk{chunk_index}.pt")
+    print(f"Saving chunk {chunk_index}", flush=True)
     torch.save(tokenized_chunk, cache_path)
-    print(f"Saved chunk {chunk_index + 1}", flush=True)
+    print(f"Saved chunk {chunk_index}", flush=True)
     print(f"Tokenization complete for {len(tokenized_chunk)} chunks", flush=True)
 
     return
