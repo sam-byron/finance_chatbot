@@ -122,21 +122,20 @@ def prepare_data(config, tokenizer, cache_path):
             process_and_save_chunk(chunk_arg, tokenizer)
             chunk_idx += 1
             chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
-            if len(chunk_paths) <= num_chunks:
+            if len(chunk_paths) >= num_chunks:
                 break
             # break
-
+        if len(chunk_paths) >= num_chunks:
+            print(f"Reached the target number of chunks: {len(chunk_paths)} >= {num_chunks}")
+            break   
         # chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk_*.pt")))
-
-        # accelerator.wait_for_everyone()
-        chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
         
-        print(f"Found {len(chunk_paths)} cached chunks.")
-        if not chunk_paths:
-            raise RuntimeError(f"No cached chunks found in {cache_path}")
+    print(f"Found {len(chunk_paths)} cached chunks.")
+    if not chunk_paths:
+        raise RuntimeError(f"No cached chunks found in {cache_path}")
 
-        if len(chunk_paths) == 0:
-            raise RuntimeError(f"No cached chunks found in {cache_path}. Please run the tokenization step first.")
+    if len(chunk_paths) == 0:
+        raise RuntimeError(f"No cached chunks found in {cache_path}. Please run the tokenization step first.")
 
     max_workers = min(len(chunk_paths), 32)
     tokenized_texts_chunks = []
