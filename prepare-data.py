@@ -93,10 +93,7 @@ def prepare_data(config, tokenizer, cache_path):
     print(f"Found {len(data_files)} data files: {data_files}")
     
     tokenize_with_tokenizer = partial(tokenize_sample, tokenizer=tokenizer)
-    # while len(chunk_paths) < 25:
-    # while len(chunk_paths) < num_chunks:  
-        # max_samples = 0
-        # for index, file in enumerate(data_files[num_files-1:], start=num_files-1):
+
     for file in enumerate(data_files[len(chunk_paths):]):
         print(f"Loading dataset from file: {file}")
         # ds_list = []
@@ -139,27 +136,12 @@ def prepare_data(config, tokenizer, cache_path):
 
     max_workers = min(len(chunk_paths), 32)
     tokenized_texts_chunks = []
-    from multiprocessing.dummy import Pool as ThreadPool  # uses threads, not processes
-    with ThreadPool(processes=max_workers) as pool:
-        tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
-
-    
-    # with Pool(processes=max_workers) as pool:
-    #     # this will spin up worker processes and call load_chunk in parallel
+    # from multiprocessing.dummy import Pool as ThreadPool  # uses threads, not processes
+    # with ThreadPool(processes=max_workers) as pool:
     #     tokenized_texts_chunks = pool.map(load_chunk, chunk_paths)
-    # use imap_unordered with chunksize=1 so each load_chunk runs in parallel
-    # with Pool(processes=max_workers) as pool:
-    #     for path, chunk in zip(
-    #         chunk_paths,
-    #         pool.imap_unordered(load_chunk, chunk_paths, chunksize=1)
-    #     ):
-    #         print(f"Loaded chunk from {path}", flush=True)
-    #         tokenized_texts_chunks.append(chunk)
-    # with Pool(processes=max_workers) as pool:
-    #     for path, chunk in pool.imap_unordered(load_chunk, chunk_paths, chunksize=1):
-    #         print(f"Loaded chunk from {path}", flush=True)
-    #         tokenized_texts_chunks.append(chunk)
 
+    tokenized_texts_chunks = list(map(load_chunk, chunk_paths))
+    
     print(f"Loaded {len(tokenized_texts_chunks)} chunks.")
     tokenized_texts = list(chain.from_iterable(tokenized_texts_chunks))
     tokenized_texts = list(map(torch.tensor, tokenized_texts))
