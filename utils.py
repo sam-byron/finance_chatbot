@@ -3,6 +3,9 @@ import random
 import torch
 from itertools import islice
 from multiprocessing import Pool, current_process
+import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
+from datasets import concatenate_datasets
 
 def save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path="checkpoint.pt"):
     torch.save({
@@ -60,42 +63,133 @@ def batch_generator_parallel(dataset, batch_size, max_samples, num_workers, star
 
 def tokenize_sample(sample, tokenizer):
     """Tokenize a single sample."""
-    if isinstance(sample, str):
-        # If the sample is a plain string, tokenize it directly
-        text = sample
-    elif isinstance(sample, dict) and "text" in sample:
-        # If the sample is a dictionary, extract the "text" field
-        text = sample["text"]
-    else:
-        raise ValueError(f"Unexpected sample format: {sample}")
+    # if isinstance(sample, str):
+    #     # If the sample is a plain string, tokenize it directly
+    #     text = sample
+    # elif isinstance(sample, dict) and "text" in sample:
+    #     # If the sample is a dictionary, extract the "text" field
+    #     text = sample["text"]
+    # else:
+    #     raise ValueError(f"Unexpected sample format: {sample}")
 
     # Tokenize the text and add the EOS token
-    return tokenizer.encode(text + tokenizer.eos_token, add_special_tokens=False, truncation=True)
+    # return tokenizer.encode(text + tokenizer.eos_token, add_special_tokens=False, truncation=True, is_split_into_words=True)\
+    # sample = [text + tokenizer.eos_token for text in sample]  # Add EOS token to each text
+    # sample = concatenate_datasets(sample) 
 
+    if not isinstance(sample, list) or not all(isinstance(x, str) for x in sample):
+        raise ValueError(f"Expected list[str], got {type(sample)}")
+    return tokenizer(sample, add_special_tokens=False, truncation=True)["input_ids"]  # Tokenize the sample and return the input IDs
+
+def tokenize_samples(samples, tokenizer):
+    """Tokenize a batch of samples."""
+    if isinstance(samples, list):
+        # If the samples are a list of strings, tokenize each string
+        texts = samples
+    else:
+        raise ValueError(f"Unexpected samples format: samples")
+    # use the tokenizer to encode the list of texts
+    # Tokenize the texts and add the EOS token
+    # If the tokenizer supports batch encoding, use it for efficiency
+    # if hasattr(tokenizer, 'batch_encode_plus'):
+    #     print(f"Using batch_encode_plus for better performance with large batches")
+    texts = [text + tokenizer.eos_token for sublist in texts for text in sublist]  # Add EOS token to each text
+    
+    return tokenizer.encode(
+        texts,
+        add_special_tokens=False,
+        truncation=True,
+        padding=False,  # No padding for now, we will handle it later
+        # return_tensors='pt'  # Return as PyTorch tensors
+        )
+    #     # ['input_ids']
+    # else:
+    #     print(f"Tokenizer does not support batch encoding, falling back to individual encoding")
+    #     # Fallback to encoding each text individually
+    #     return [tokenizer.encode(text + tokenizer.eos_token, add_special_tokens=False, truncation=True) for text in texts]
+
+    # Tokenize the text and add the EOS token
+    # return tokenizer.encode(text + tokenizer.eos_token, add_special_tokens=False, truncation=True)
 def load_chunk(chunk_path):
     """Helper function to load a single chunk."""
     print(f"Loading chunk from {chunk_path}...", flush=True)
     return torch.load(chunk_path, map_location="cpu")
 
-def process_and_save_chunk(args):
+def process_and_save_chunk(arg, tokenizer):
     """
     Tokenize and save a single chunk.
     Now each chunk filename includes the target_rank so that different GPUs won't overwrite each other.
     """
-    sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = args
-    # Only process the chunk on the designated worker (e.g. round-robin assignment)
-    # if (chunk_index % world_size) != target_rank:
-    #     # Skip processing if this chunk isn’t for this GPU.
-    #     return None
+    # num_workers = min(64, len(args))
+    cache_path = []  # Initialize chunk_paths
+    tokenized_chunks = []
+    
+    sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
+    sample_chunk = [sample["text"] + tokenizer.eos_token for sample in sample_chunk]
+    if not isinstance(sample_chunk, list) or not all(isinstance(t, str) for t in sample_chunk):
+        print(f"Expected list[str], got {type(sample_chunk)}")
+        raise ValueError(f"Expected list[str], got {type(sample_chunk)}")
+    # sample_chunk = [word for sample in sample_chunk for word in sample.split()]
+    # sample_chunk = [sample.split() for sample in sample_chunk]  # Split each sample into words
+    # for arg in args:
+    #     sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
+    # sample_chunk = [sample["text"]+tokenizer.eos_token for sample in sample_chunk]  # Extract text from each sample in the chunk
+    try:
+        tokenized_chunk = tokenize_with_tokenizer(sample_chunk)  # Ensure the tokenizer is called to avoid lazy evaluation issues
+        if not tokenized_chunk:
+            raise ValueError("Tokenizer did not produce any output. Check the input or tokenizer implementation.")
+    except Exception as e:
+        print(f"Error tokenizing chunk {chunk_index}: {e}", flush=True)
+        return None
+    # for tokenized_chunk, chunk_index in zip(tokenized_chunks, chunk_idxs):
+    # chunk_filename = f"chunk_{chunk_index + 1}.pt"
+    # chunk_path = os.path.join(cache_path, chunk_filename)
+    # chunk_paths.append(chunk_path)
+    print(f"Saving chunk {chunk_index + 1}", flush=True)
+    torch.save(tokenized_chunk, cache_path)
+    print(f"Saved chunk {chunk_index + 1}", flush=True)
+    # tokenized_chunks = list(map(tokenize_with_tokenizer, sample_chunks))
+    # with Pool(num_workers) as pool:
+    #     tokenized_chunks = pool.map(tokenize_with_tokenizer, sample_chunks)
+    print(f"Tokenization complete for {len(tokenized_chunk)} chunks", flush=True)
 
-    print(f"Processing chunk {chunk_index + 1}...")
-    # tokenized_chunk = list(map(tokenize_with_tokenizer, sample_chunk['text']))
-    num_workers = min(32, len(sample_chunk["text"]))
-    with Pool(num_workers) as pool:
-        tokenized_chunk = pool.map(tokenize_with_tokenizer, sample_chunk["text"])
-    chunk_filename = f"chunk_{chunk_index + 1}.pt"
-    chunk_path = os.path.join(cache_path, chunk_filename)
-    print(f"Saving chunk {chunk_index + 1} to {chunk_path}...", flush=True)
-    torch.save(tokenized_chunk, chunk_path)
-    print(f"Saved chunk {chunk_index + 1} to {chunk_path}", flush=True)
-    return chunk_path
+    return
+
+# def process_and_save_chunk(args):
+#     """
+#     Tokenize and save a single chunk.
+#     Now each chunk filename includes the target_rank so that different GPUs won't overwrite each other.
+#     """
+#     # num_workers = min(64, len(args))
+#     sample_chunks = []
+#     chunk_idxs = []
+#     cache_path = []  # Initialize chunk_paths
+#     tokenized_chunks = []
+    
+#     sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = args[0]
+#     print(f"Processing chunks")
+#     for arg in args:
+#         sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
+#         sample_texts = [sample_text["text"] for sample_text in sample_chunk]
+#         sample_chunks.append(sample_texts)
+#         chunk_idxs.append(chunk_index)
+#     try:
+#         tokenized_chunk = tokenize_with_tokenizer(sample_chunks)  # Ensure the tokenizer is called to avoid lazy evaluation issues
+#         if not tokenized_chunk:
+#             raise ValueError("Tokenizer did not produce any output. Check the input or tokenizer implementation.")
+#     except Exception as e:
+#         print(f"Error tokenizing chunk {chunk_index}: {e}", flush=True)
+#         return None
+#     # for tokenized_chunk, chunk_index in zip(tokenized_chunks, chunk_idxs):
+#     chunk_filename = f"chunk_{chunk_index + 1}.pt"
+#     # chunk_path = os.path.join(cache_path, chunk_filename)
+#     # chunk_paths.append(chunk_path)
+#     print(f"Saving chunk {chunk_index + 1}", flush=True)
+#     torch.save(tokenized_chunk, cache_path)
+#     print(f"Saved chunk {chunk_index + 1}", flush=True)
+#     # tokenized_chunks = list(map(tokenize_with_tokenizer, sample_chunks))
+#     # with Pool(num_workers) as pool:
+#     #     tokenized_chunks = pool.map(tokenize_with_tokenizer, sample_chunks)
+#     print(f"Tokenization complete for {len(tokenized_chunks)} chunks", flush=True)
+
+#     return
