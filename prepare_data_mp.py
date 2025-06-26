@@ -34,16 +34,6 @@ def chunked(iterable, size):
         except StopIteration:
             # If StopIteration is raised, it means the iterator is exhausted
             break
-        
-        # if batch != []:
-        #     yield batch
-        # else:
-        #     yield []  # Yield an empty list if no more items are available
-        #     break
-        # if not batch:
-        #     break
-        # yield batch
-    
 
 def prepare_data(config, tokenizer, cache_path):
 

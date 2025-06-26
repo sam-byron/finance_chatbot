@@ -90,6 +90,13 @@ def load_chunk(chunk_path):
     print(f"Loading chunk from {chunk_path}...", flush=True)
     return torch.load(chunk_path, map_location="cpu")
 
+def load_chunk_safe(path):
+    try:
+        return load_chunk(path)
+    except (RuntimeError, EOFError) as e:
+        print(f"[Warning] failed to load {path}: {e}")
+        return []
+
 from concurrent.futures import ThreadPoolExecutor
 
 # global thread pool for parallel disk writes
