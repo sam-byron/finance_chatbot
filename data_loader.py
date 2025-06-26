@@ -3,13 +3,12 @@ import math
 import os
 import random
 import glob
-from datasets import load_dataset, Dataset
 from functools import partial
 from utils_mp import load_chunk, load_chunk_safe
 from multiprocessing import Pool
 from itertools import chain
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from collator import Collator
 from concurrent.futures import ThreadPoolExecutor
 import time
@@ -77,6 +76,18 @@ class ChatDataset(Dataset):
         Return the chunk at the specified index.
         """
         return self.chunks[idx]
+    # def __getitem__(self, idx):
+    #     """
+    #     Return chunk(s) at the specified index or indices.
+    #     Supports int, slice, list of ints or 1D tensor of ints.
+    #     """
+    #     # batch‐style indexing
+    #     if isinstance(idx, (list, slice, torch.Tensor)):
+    #         if isinstance(idx, torch.Tensor):
+    #             idx = idx.tolist()
+    #         return [self.chunks[i] for i in idx]
+    #     # single‐item
+    #     return self.chunks[idx]
     
 def data_loader(config, tokenizer, cache_path):
 
@@ -100,16 +111,19 @@ def data_loader(config, tokenizer, cache_path):
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
         tokenized_texts_chunks = list(
             executor.map(load_chunk_safe, chunk_paths)
+            # executor.map(load_chunk, chunk_paths)
         )
 
     # drop any empty results
-    tokenized_texts_chunks = [c for c in tokenized_texts_chunks if c]
+    tokenized_texts_chunks = [c for c in tokenized_texts_chunks if c != []]
 
     # tokenized_texts_chunks = list(map(load_chunk, chunk_paths))
     
     print(f"Loaded {len(tokenized_texts_chunks)} chunks.")
     tokenized_texts = list(chain.from_iterable(tokenized_texts_chunks))
-    tokenized_texts = list(map(torch.tensor, tokenized_texts))
+    # tokenized_texts = list(map(torch.tensor, tokenized_texts))
+    # cast to uint16
+    tokenized_texts = [torch.tensor(x, dtype=torch.uint16) for x in tokenized_texts]
     print(f"Loaded {len(tokenized_texts)} samples from cache.")
 
     print(f"Finished parallel loading: {len(tokenized_texts_chunks)} chunks", flush=True)
