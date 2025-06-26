@@ -6,15 +6,12 @@ from utils_mp import tokenize_sample, load_chunk, process_and_save_chunk
 from multiprocessing import Pool
 from itertools import chain
 import torch
-from torch.utils.data import DataLoader
-from concurrent.futures import ThreadPoolExecutor
-import time
-from datasets import concatenate_datasets
-from transformers import AutoTokenizer, get_scheduler
 import argparse
 import json
 import multiprocessing as mp
 from itertools import islice
+import gc
+from transformers import AutoTokenizer
 
 os.environ["OMP_NUM_THREADS"]       = "1"
 os.environ["MKL_NUM_THREADS"]       = "1"
@@ -30,42 +27,13 @@ def chunked(iterable, size):
     it = iter(iterable)
     while True:
         batch = list(islice(it, size))
-        if not batch:
-            return None
-        yield batch
-
-def prepare_data_mp(file_idx_pair, config, tokenizer, cache_path):
-
-    chunk_size = config["chunk_size"]
-
-    file, file_idx = file_idx_pair
-
-    tokenize_with_tokenizer = partial(tokenize_sample, tokenizer=tokenizer)
-
-    # Save index of file processed
-    with open(os.path.join(cache_path, "processed_files.txt"), "w") as f:
-        print(f"Loading dataset from file: {file}")
-        # ds_list = []
-        stream = load_dataset(
-            "Skylion007/openwebtext",
-            # "json",
-            data_files={"train":[file]},
-            trust_remote_code=True,
-            # num_proc=64,
-            streaming=True,
-            split="train",
-        )
-        # chunk_idx = len(chunk_paths)
-        chunk_idx = 0
-        chunks = chunked(stream, chunk_size)
-      
-        while chunks:
-            # Extract the next chunk in chunks
-            chunk = next(chunks)
-            print(f"Processing chunk {chunk_idx} for file_idx {file_idx}, got {len(chunk[1])} examples")
-            chunk_arg = (file_idx, chunk, chunk_idx, cache_path, tokenize_with_tokenizer)
-            process_and_save_chunk(chunk_arg, tokenizer)
-            chunk_idx += 1
+        if batch:
+            yield batch
+        else:
+            yield []  # Yield an empty list if no more items are available
+        # if not batch:
+        #     break
+        # yield batch
     
 
 def prepare_data(config, tokenizer, cache_path):
@@ -79,19 +47,40 @@ def prepare_data(config, tokenizer, cache_path):
     file_path = "/home/sam-byron/.cache/huggingface/hub/datasets--Skylion007--openwebtext/snapshots/f3808c30e817981b845ec549c43e82bb467d8144/subsets/*"
     # chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
 
-    data_files = sorted(glob.glob(file_path))
-    num_files = len(data_files)
-    print(f"Found {num_files} data files: {data_files}")
+    chunk_size = config["chunk_size"]
 
-    file_indices = []
-    for file_idx, file in enumerate(data_files):
-        file_indices.append(file_idx)
+    tokenize_with_tokenizer = partial(tokenize_sample, tokenizer=tokenizer)
 
-    file_idx_pair = list(zip(data_files, file_indices))
-    prepare_data_mp_partial = partial(prepare_data_mp, config=config, tokenizer=tokenizer, cache_path=cache_path)
-    with Pool(processes=min(mp.cpu_count(), num_files)) as pool:
+    # Save index of file processed
+    print(f"Loading dataset")
+    # ds_list = []
+    stream = load_dataset(
+        "Skylion007/openwebtext",
+        # "json",
+        # data_files={"train":[file]},
+        trust_remote_code=True,
+        # num_proc=64,
+        streaming=True,
+        split="train",
+    )
+    # chunk_idx = len(chunk_paths)
+    chunk_idx = 0
+    # chunks = chunked(stream, chunk_size)
+    
+    chunk_args = []
+    for chunk_idx, chunk in enumerate(chunked(stream, chunk_size)):
+        if len(chunk) == 0:
+            print(f"Empty chunk encountered at chunk index {chunk_idx}, stopping processing.")
+            break
+        print(f"Appending chunk {chunk_idx}, with {len(chunk)} examples")
+        chunk_arg = (chunk, chunk_idx, cache_path, tokenize_with_tokenizer)
+        chunk_args.append(chunk_arg)
+
+
+    # prepare_data_mp_partial = partial(prepare_data_mp, config=config, tokenizer=tokenizer, cache_path=cache_path)
+    with Pool(processes=min(mp.cpu_count(), 64)) as pool:
         # Use the pool to process each file in parallel
-        pool.map(prepare_data_mp_partial, file_idx_pair)
+        pool.starmap(process_and_save_chunk, chunk_args)
 
     return 1
 

@@ -98,7 +98,7 @@ def process_and_save_chunk(arg, tokenizer):
     cache_path = []  # Initialize chunk_paths
     # tokenized_chunks = []
     
-    file_idx, sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
+    sample_chunk, chunk_index, cache_path, tokenize_with_tokenizer = arg
     sample_chunk = [sample["text"] + tokenizer.eos_token for sample in sample_chunk]
     if not isinstance(sample_chunk, list) or not all(isinstance(t, str) for t in sample_chunk):
         print(f"Expected list[str], got {type(sample_chunk)}")
@@ -110,10 +110,10 @@ def process_and_save_chunk(arg, tokenizer):
     except Exception as e:
         print(f"Error tokenizing chunk {chunk_index}: {e}", flush=True)
         return None
-    cache_path = os.path.join(cache_path, f"file{file_idx}_chunk{chunk_index}.pt")
-    print(f"Saving chunk {chunk_index} for file idx {file_idx}", flush=True)
+    cache_path = os.path.join(cache_path, f"chunk{chunk_index}.pt")
+    print(f"Saving chunk {chunk_index}", flush=True)
     torch.save(tokenized_chunk, cache_path)
-    print(f"Saved chunk {chunk_index} for file idx {file_idx}", flush=True)
+    print(f"Saved chunk {chunk_index}", flush=True)
     print(f"Tokenization complete for {len(tokenized_chunk)} chunks", flush=True)
 
     return
