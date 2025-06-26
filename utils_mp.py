@@ -90,6 +90,11 @@ def load_chunk(chunk_path):
     print(f"Loading chunk from {chunk_path}...", flush=True)
     return torch.load(chunk_path, map_location="cpu")
 
+from concurrent.futures import ThreadPoolExecutor
+
+# global thread pool for parallel disk writes
+_SAVE_POOL = ThreadPoolExecutor(max_workers=32)
+
 def process_and_save_chunk(arg, tokenizer):
     """
     Tokenize and save a single chunk.
@@ -111,10 +116,12 @@ def process_and_save_chunk(arg, tokenizer):
         print(f"Error tokenizing chunk {chunk_index}: {e}", flush=True)
         return None
     cache_path = os.path.join(cache_path, f"chunk{chunk_index}.pt")
-    print(f"Saving chunk {chunk_index}", flush=True)
-    torch.save(tokenized_chunk, cache_path)
-    print(f"Saved chunk {chunk_index}", flush=True)
+    # print(f"Saving chunk {chunk_index}", flush=True)
+    # torch.save(tokenized_chunk, cache_path)
+    fut = _SAVE_POOL.submit(torch.save, tokenized_chunk, cache_path)
+    fut.add_done_callback(lambda f: print(f"Saved chunk {chunk_index} → {cache_path}", flush=True))
+    # print(f"Saved chunk {chunk_index}", flush=True)
     print(f"Tokenization complete for {len(tokenized_chunk)} chunks", flush=True)
 
-    return
+    return fut
 
