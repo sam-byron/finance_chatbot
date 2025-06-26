@@ -6,15 +6,12 @@ from utils_mp import tokenize_sample, load_chunk, process_and_save_chunk
 from multiprocessing import Pool
 from itertools import chain
 import torch
-from torch.utils.data import DataLoader
-from concurrent.futures import ThreadPoolExecutor
-import time
-from datasets import concatenate_datasets
-from transformers import AutoTokenizer, get_scheduler
 import argparse
 import json
 import multiprocessing as mp
 from itertools import islice
+import gc
+from transformers import AutoTokenizer
 
 os.environ["OMP_NUM_THREADS"]       = "1"
 os.environ["MKL_NUM_THREADS"]       = "1"
@@ -30,9 +27,13 @@ def chunked(iterable, size):
     it = iter(iterable)
     while True:
         batch = list(islice(it, size))
-        if not batch:
-            return None
-        yield batch
+        if batch:
+            yield batch
+        else:
+            yield []  # Yield an empty list if no more items are available
+        # if not batch:
+        #     break
+        # yield batch
 
 def prepare_data_mp(file_idx_pair, config, tokenizer, cache_path):
 
@@ -57,15 +58,22 @@ def prepare_data_mp(file_idx_pair, config, tokenizer, cache_path):
         )
         # chunk_idx = len(chunk_paths)
         chunk_idx = 0
-        chunks = chunked(stream, chunk_size)
+        # chunks = chunked(stream, chunk_size)
       
-        while chunks:
-            # Extract the next chunk in chunks
-            chunk = next(chunks)
-            print(f"Processing chunk {chunk_idx} for file_idx {file_idx}, got {len(chunk[1])} examples")
+        for chunk_idx, chunk in enumerate(chunked(stream, chunk_size)):
+            if len(chunk) == 0:
+                print(f"Empty chunk encountered at chunk index {chunk_idx}, stopping processing for file index {file_idx}.")
+                break
+            print(f"Processing chunk {chunk_idx} for file_idx {file_idx}, got {len(chunk)} examples")
             chunk_arg = (file_idx, chunk, chunk_idx, cache_path, tokenize_with_tokenizer)
             process_and_save_chunk(chunk_arg, tokenizer)
-            chunk_idx += 1
+            # drop the big list after saving
+            del chunk
+            gc.collect()
+            # chunk_idx += 1
+     # finally drop stream & chunks themselves
+    del stream, chunks
+    gc.collect()
     
 
 def prepare_data(config, tokenizer, cache_path):
