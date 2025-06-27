@@ -16,7 +16,7 @@ from tqdm import tqdm
 from accelerate import Accelerator
 from data_loader import data_loader
 from iter_data_loader import iter_data_loader
-from utils import save_checkpoint, load_checkpoint
+from utils_mp import save_checkpoint, load_checkpoint
 from evaluation import evaluate_perplexity, create_test_subset
 from itertools import chain
 import argparse
@@ -53,7 +53,7 @@ def build_model(config):
     return model
 
 # @torch.compile(backend="inductor", fullgraph=False)
-def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, total_steps):
+def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, steps_per_epoch, val_steps_per_epoch):
     num_epochs = config["num_epochs"]
     # scaler = torch.cuda.amp.GradScaler()
 
@@ -72,7 +72,14 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
         # model.train()
         total_loss = 0
 
-        for step, batch in enumerate(tqdm(train_loader, desc=f"Epoch {epoch + 1}")):
+        for step, batch in enumerate(
+            tqdm(train_loader, 
+            desc=f"Epoch {epoch + 1}",
+            total=steps_per_epoch,
+            leave=True,
+            )
+            
+            ):
             with accelerator.autocast():
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -95,15 +102,15 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
                 # accelerator.wait_for_everyone()
                 
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 3 * 60:  # 3 minutes in seconds
-                    if accelerator.is_main_process:
-                        save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
-                        last_checkpoint_time = current_time
-                        # if accelerator.is_main_process:
-                        print(f"Epoch {epoch + 1}, Step {step + 1}/{total_steps}, Loss: {avg_loss:.4f}")
-                        # Evaluate perplexity on a subset of the test set
-                        test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator.device)
-                        print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
+                if current_time - last_checkpoint_time >= 1 * 60:  # 3 minutes in seconds
+                    # if accelerator.is_main_process:
+                    save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+                    last_checkpoint_time = current_time
+                    # if accelerator.is_main_process:
+                    print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {avg_loss:.4f}")
+                    # Evaluate perplexity on a subset of the test set
+                    test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
+                    print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
 
         
         if accelerator.is_main_process:
@@ -161,30 +168,33 @@ def main():
     batch_size = config["batch_size"]
     pad_id = tokenizer.pad_token_id
     collate_fn = Collator(pad_id)
-    empty_loader = DataLoader(
-        EmptyDataset(),
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=0,
-        pin_memory=True,
-        collate_fn=collate_fn,)
-    train_loader = empty_loader
-    test_loader  = empty_loader
+    # empty_loader = DataLoader(
+    #     EmptyDataset(),
+    #     batch_size=batch_size,
+    #     shuffle=False,
+    #     num_workers=0,
+    #     pin_memory=True,
+    #     collate_fn=collate_fn,)
+    # train_loader = empty_loader
+    # test_loader  = empty_loader
 
     test_texts = None
 
     # train_loader, test_loader, test_texts, collate_fn = data_loader(config, tokenizer, config["cache_path"])
-    train_loader, val_loader, test_loader, collate_fn, total_train_blocks = iter_data_loader(config, tokenizer, config["cache_path"])
+    train_loader, val_loader, test_loader, collate_fn, total_train_blocks, total_val_blocks = iter_data_loader(config, tokenizer, config["cache_path"])
     model = build_model(config)
 
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
    
-    model, optimizer, train_loader, test_loader = accelerator.prepare(
-        model, optimizer, train_loader, test_loader
+    model, optimizer, train_loader, test_loader, val_loader = accelerator.prepare(
+        model, optimizer, train_loader, test_loader, val_loader
     )
 
     steps_per_epoch   = total_train_blocks // config["batch_size"]
     total_steps       = steps_per_epoch * config["num_epochs"]
+
+    val_steps_per_epoch   = total_val_blocks // config["batch_size"]
+    val_total_steps       = val_steps_per_epoch * config["num_epochs"]
 
     scheduler = get_scheduler(
         "cosine",
@@ -211,7 +221,7 @@ def main():
      # create the GradScaler exactly once, outside the compiled loop
     scaler = torch.cuda.amp.GradScaler()
 
-    train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, total_steps)
+    train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, steps_per_epoch, val_steps_per_epoch)
 
 
 if __name__ == "__main__":

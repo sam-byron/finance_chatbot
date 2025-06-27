@@ -109,8 +109,8 @@ def iter_data_loader(config, tokenizer, cache_path):
         raise RuntimeError(f"No cached chunks found in {cache_path}")
 
     # fraction splits (you can also pull these from config)
-    train_frac = config.get("train_frac", 0.85)
-    val_frac   = config.get("val_frac",   0.05)
+    train_frac = config.get("train_frac", 0.89)
+    val_frac   = config.get("val_frac",   0.01)
     assert train_frac + val_frac < 1.0, "train_frac + val_frac must be < 1.0"
     N = len(chunk_paths)
     idx1 = int(train_frac * N)
@@ -153,4 +153,13 @@ def iter_data_loader(config, tokenizer, cache_path):
         total_train_blocks = sum(counts)
     print(f"Total blocks in train paths: {total_train_blocks}")
 
-    return train_loader, val_loader, test_loader, collate_fn, total_train_blocks
+    # count how many real samples in val_paths
+    print("Counting total blocks in val paths...")
+    total_val_blocks = 0
+    with ProcessPoolExecutor() as exe:
+        counts = exe.map(_count_blocks_in_chunk,
+                             ((p, block_size) for p in val_paths))
+        total_val_blocks = sum(counts)
+    print(f"Total blocks in val paths: {total_val_blocks}")
+
+    return train_loader, val_loader, test_loader, collate_fn, total_train_blocks, total_val_blocks

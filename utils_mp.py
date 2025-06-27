@@ -8,9 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datasets import concatenate_datasets
 
 def save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path="checkpoint.pt"):
+     # if model is wrapped (DDP, DistributedDataParallel, etc.) it has .module
+    model_to_save = model.module if hasattr(model, "module") else model
     torch.save({
         "epoch": epoch,
-        "model_state_dict": model.module.state_dict(),
+        "model_state_dict": model_to_save.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
