@@ -15,6 +15,7 @@ from torch.optim import AdamW
 from tqdm import tqdm
 from accelerate import Accelerator
 from data_loader import data_loader
+from iter_data_loader import iter_data_loader
 from utils import save_checkpoint, load_checkpoint
 from evaluation import evaluate_perplexity, create_test_subset
 from itertools import chain
@@ -52,7 +53,7 @@ def build_model(config):
     return model
 
 # @torch.compile(backend="inductor", fullgraph=False)
-def train_loop(accelerator, model, train_loader, test_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn):
+def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, total_steps):
     num_epochs = config["num_epochs"]
     # scaler = torch.cuda.amp.GradScaler()
 
@@ -99,18 +100,9 @@ def train_loop(accelerator, model, train_loader, test_loader, test_texts, optimi
                         save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                         last_checkpoint_time = current_time
                         # if accelerator.is_main_process:
-                        print(f"Epoch {epoch + 1}, Step {step + 1}/{len(train_loader)}, Loss: {avg_loss:.4f}")
+                        print(f"Epoch {epoch + 1}, Step {step + 1}/{total_steps}, Loss: {avg_loss:.4f}")
                         # Evaluate perplexity on a subset of the test set
-                        test_subset_loader = create_test_subset(
-                            test_texts,
-                            10000,
-                            block_size,
-                            batch_size,
-                            collate_fn,
-                            accelerator.num_processes,
-                            accelerator.process_index
-                        )
-                        test_subset_loss, perplexity = evaluate_perplexity(model, test_subset_loader, accelerator.device)
+                        test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator.device)
                         print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
 
         
@@ -181,7 +173,8 @@ def main():
 
     test_texts = None
 
-    train_loader, test_loader, test_texts, collate_fn = data_loader(config, tokenizer, config["cache_path"])
+    # train_loader, test_loader, test_texts, collate_fn = data_loader(config, tokenizer, config["cache_path"])
+    train_loader, val_loader, test_loader, collate_fn, total_train_blocks = iter_data_loader(config, tokenizer, config["cache_path"])
     model = build_model(config)
 
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -190,11 +183,14 @@ def main():
         model, optimizer, train_loader, test_loader
     )
 
+    steps_per_epoch   = total_train_blocks // config["batch_size"]
+    total_steps       = steps_per_epoch * config["num_epochs"]
+
     scheduler = get_scheduler(
         "cosine",
         optimizer=optimizer,
         num_warmup_steps=config["warmup_steps"],
-        num_training_steps=config["num_epochs"] * len(train_loader),
+        num_training_steps=total_steps,
     )
     
     checkpoint = load_checkpoint(checkpoint_path)
@@ -215,7 +211,7 @@ def main():
      # create the GradScaler exactly once, outside the compiled loop
     scaler = torch.cuda.amp.GradScaler()
 
-    train_loop(accelerator, model, train_loader, test_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn)
+    train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, total_steps)
 
 
 if __name__ == "__main__":
