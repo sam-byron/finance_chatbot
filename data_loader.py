@@ -129,7 +129,7 @@ def data_loader(config, tokenizer, cache_path):
     print(f"Finished parallel loading: {len(tokenized_texts_chunks)} chunks", flush=True)
     print("Shuffling tokenized texts...")
     random.shuffle(tokenized_texts)
-    split_index = int(0.75 * len(tokenized_texts))
+    split_index = int(0.9 * len(tokenized_texts))
     train_texts = tokenized_texts[:split_index]
     test_texts = tokenized_texts[split_index:]
 
@@ -145,7 +145,7 @@ def data_loader(config, tokenizer, cache_path):
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=2,
+        num_workers=6,
         pin_memory=True,
         collate_fn=collate_fn,
     )
@@ -154,7 +154,7 @@ def data_loader(config, tokenizer, cache_path):
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=2,
+        num_workers=6,
         pin_memory=True,
         collate_fn=collate_fn,
     )
