@@ -13,12 +13,12 @@ from torch.utils.data import DataLoader, Dataset
 from transformers import GPT2LMHeadModel, GPT2Config, AutoTokenizer, get_scheduler
 from torch.optim import AdamW
 from tqdm import tqdm
-from accelerate import Accelerator
+from accelerate import Accelerator, DataLoaderConfiguration
 from data_loader import data_loader
 from iter_data_loader import iter_data_loader
 from utils_mp import save_checkpoint, load_checkpoint
 from evaluation import evaluate_perplexity, create_test_subset
-from itertools import chain
+from itertools import chain, islice
 import argparse
 import glob
 from functools import partial
@@ -69,7 +69,7 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
     last_checkpoint_time = time.time()
     model.train()
     for epoch in range(start_epoch, num_epochs):
-        # model.train()
+        model.train()
         total_loss = 0
 
         for step, batch in enumerate(
@@ -80,6 +80,17 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
             )
             
             ):
+        # step = 0
+        # iterator = iter(train_loader)
+        # while True:
+        #     try:
+        #         batch = next(iterator)
+        #     except StopIteration:
+        #         # loader is exhausted
+        #         print(f"Data loader exhausted after {step} batches")
+        #         break
+        # for step, batch in enumerate(train_loader):
+        # for batch in islice(train_loader, steps_per_epoch):
             with accelerator.autocast():
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -87,35 +98,42 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
                     labels=batch["labels"],
                 )
                 loss = outputs.loss
-                total_loss += loss.item()
+                # total_loss += loss.item()
 
                 accelerator.backward(loss)
                 optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad()
 
-                loss_tensor = loss.detach()
-                # Gather across processes: returns a tensor with one element per process
-                loss_gathered = accelerator.gather(loss_tensor)
-                # Compute average loss across all GPUs
-                avg_loss = loss_gathered.mean()
-                # accelerator.wait_for_everyone()
+                # loss_tensor = loss.detach()
+                # # Gather across processes: returns a tensor with one element per process
+                # loss_gathered = accelerator.gather(loss_tensor)
+                # # Compute average loss across all GPUs
+                # avg_loss = loss_gathered.mean()
+                # # accelerator.wait_for_everyone()
+
+                #   this does an all_reduce followed by division by world_size
+                reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
                 
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 1 * 60:  # 3 minutes in seconds
+                if current_time - last_checkpoint_time >= 10 * 60:  # 3 minutes in seconds
                     # if accelerator.is_main_process:
-                    save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+                    # save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+                    accelerator.wait_for_everyone()
+                    # accelerator.save_model(model, checkpoint_path)
+                    accelerator.save_state(output_dir=checkpoint_path)
                     last_checkpoint_time = current_time
-                    # if accelerator.is_main_process:
-                    print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {avg_loss:.4f}")
+                    if accelerator.is_main_process:
+                        print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {reduced_loss:.4f}")
                     # Evaluate perplexity on a subset of the test set
-                    test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
-                    print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
-
+                    # test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
+                    # print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
+            # step += 1
         
-        if accelerator.is_main_process:
-            print(f"Epoch {epoch + 1} average loss: {avg_loss:.4f}")
-            save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+        # if accelerator.is_main_process:
+        print(f"Epoch {epoch + 1} reduced loss: {reduced_loss:.4f}")
+        accelerator.wait_for_everyone()
+        accelerator.save_state(output_dir=checkpoint_path)
 
 
 def main():
@@ -147,7 +165,13 @@ def main():
         device_id=torch.device(f"cuda:{local_rank}"),   # <-- pass a torch.device
     )
     
-    accelerator = Accelerator()
+    # You need to tell Accelerate not to “dispatch” the same batch to every rank when using an IterableDataset (or else split each global batch into per‐rank pieces). Two ways to do this:
+    # Option A) Disable dispatching entirely by passing dispatch_batches=False
+    dataloader_config = DataLoaderConfiguration(
+    dispatch_batches=False,  # Each process fetches its own batch
+    split_batches=True       # Split fetched batches across processes
+    )
+    accelerator = Accelerator(dataloader_config=dataloader_config)
 
     parser = argparse.ArgumentParser(description="Chatbot Training Script with Accelerate")
     parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
@@ -181,7 +205,7 @@ def main():
     test_texts = None
 
     # train_loader, test_loader, test_texts, collate_fn = data_loader(config, tokenizer, config["cache_path"])
-    train_loader, val_loader, test_loader, collate_fn, total_train_blocks, total_val_blocks = iter_data_loader(config, tokenizer, config["cache_path"])
+    train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches = iter_data_loader(config, tokenizer, config["cache_path"])
     model = build_model(config)
 
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])
@@ -190,38 +214,44 @@ def main():
         model, optimizer, train_loader, test_loader, val_loader
     )
 
-    steps_per_epoch   = total_train_blocks // config["batch_size"]
-    total_steps       = steps_per_epoch * config["num_epochs"]
+    # total_batch_size = config["batch_size"] * accelerator.num_processes
+    # steps_per_epoch   = total_train_blocks // total_batch_size
+    # total_steps       = steps_per_epoch * config["num_epochs"]
 
-    val_steps_per_epoch   = total_val_blocks // config["batch_size"]
-    val_total_steps       = val_steps_per_epoch * config["num_epochs"]
+    # val_steps_per_epoch   = total_val_blocks // total_batch_size
+    # val_total_steps       = val_steps_per_epoch * config["num_epochs"]
 
     scheduler = get_scheduler(
         "cosine",
         optimizer=optimizer,
         num_warmup_steps=config["warmup_steps"],
-        num_training_steps=total_steps,
+        num_training_steps=total_train_batches,
     )
     
-    checkpoint = load_checkpoint(checkpoint_path)
+    # checkpoint = load_checkpoint(checkpoint_path)
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        print(f"Loading checkpoint from {checkpoint_path}")
+        accelerator.load_state(checkpoint_path)
+    else:
+        print(f"No checkpoint found at {checkpoint_path}, starting from scratch.")  
     start_epoch = 0
-    if checkpoint:
-        loaded_state_dict = checkpoint["model_state_dict"]
-        # If keys don't start with "module.", add the prefix.
-        if not list(loaded_state_dict.keys())[0].startswith("module."):
-            new_state_dict = {"module." + k: v for k, v in loaded_state_dict.items()}
-        else:
-            new_state_dict = loaded_state_dict
-        model.load_state_dict(new_state_dict)
-        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-        start_epoch = checkpoint["epoch"] + 1
+    # if checkpoint:
+    #     loaded_state_dict = checkpoint["model_state_dict"]
+    #     # If keys don't start with "module.", add the prefix.
+    #     if not list(loaded_state_dict.keys())[0].startswith("module."):
+    #         new_state_dict = {"module." + k: v for k, v in loaded_state_dict.items()}
+    #     else:
+    #         new_state_dict = loaded_state_dict
+    #     model.load_state_dict(new_state_dict)
+    #     optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+    #     scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+    #     start_epoch = checkpoint["epoch"] + 1
     # compute once, before compile
     num_cpu = os.cpu_count() - 4
      # create the GradScaler exactly once, outside the compiled loop
     scaler = torch.cuda.amp.GradScaler()
 
-    train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, steps_per_epoch, val_steps_per_epoch)
+    train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, total_train_batches, total_val_batches)
 
 
 if __name__ == "__main__":

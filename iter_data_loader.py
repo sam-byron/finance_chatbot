@@ -22,7 +22,7 @@ import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
-from torch.utils.data import IterableDataset
+from torch.utils.data import IterableDataset, get_worker_info
 
 class ChunkedIterableDataset(IterableDataset):
     def __init__(self, chunk_paths, block_size, dtype=torch.uint16):
@@ -31,72 +31,44 @@ class ChunkedIterableDataset(IterableDataset):
         self.dtype = dtype
 
     def __iter__(self):
+        worker_info = get_worker_info()
+        if worker_info is None:  # single‐process
+            paths = self.chunk_paths
+        else:
+            # split paths across workers
+            idx, num = worker_info.id, worker_info.num_workers
+            paths = self.chunk_paths[idx::num]
         # optional shuffle of chunk order
         random.shuffle(self.chunk_paths)
-        for path in self.chunk_paths:
+        for path in paths:
             # load chunk (this yields a list of lists of ints)
             sequences = torch.load(path, map_location="cpu")
             for seq in sequences:
                 # cast and split into fixed‐size blocks on the fly
                 ids = torch.tensor(seq, dtype=self.dtype)
-                for i in range(0, len(ids), self.block_size):
-                    chunk = ids[i : i + self.block_size]
-                    if len(chunk) == self.block_size:
+                if len(ids) < self.block_size:
+                    yield ids.tolist()  # yield the whole sequence if it's shorter than block_size
+                else:
+                    for i in range(0, len(ids), self.block_size):
+                        chunk = ids[i : i + self.block_size]
                         yield chunk
+                        # if len(chunk) <= self.block_size:
+                        #     yield chunk
+        
+        # Throw stop iteration exception when all chunks are exhausted
+        # raise StopIteration
     
-# def iter_data_loader(config, tokenizer, cache_path):
 
-#     block_size = config["block_size"]
-#     batch_size = config["batch_size"]
-#     chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
 
-#     print(f"Found {len(chunk_paths)} cached chunks.")
-#     if not chunk_paths:
-#         raise RuntimeError(f"No cached chunks found in {cache_path}")
-
-#     if len(chunk_paths) == 0:
-#         raise RuntimeError(f"No cached chunks found in {cache_path}. Please run the tokenization step first.")
-
-#     max_workers = min(len(chunk_paths), 96)
-
-#     # Split chunks files into train and test sets
-#     split = 0.9
-#     chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
-#     split_index = int(split * len(chunk_paths))
-#     train_chunk_paths = chunk_paths[:split_index]
-#     test_chunk_paths = chunk_paths[split_index:]
-
-#     # def __init__(self, chunk_paths, block_size, dtype=torch.int16):
-#     train_dataset = ChunkedIterableDataset(train_chunk_paths, block_size=block_size)
-#     test_dataset = ChunkedIterableDataset(test_chunk_paths, block_size=block_size)
-
-#     pad_id = tokenizer.pad_token_id
-#     collate_fn = Collator(pad_id)
-
-#     train_loader = DataLoader(
-#         train_dataset,
-#         batch_size=batch_size,
-#         num_workers=6,
-#         pin_memory=True,
-#         collate_fn=collate_fn,
-#     )
-
-#     test_loader = DataLoader(
-#         test_dataset,
-#         batch_size=batch_size,
-#         num_workers=6,
-#         pin_memory=True,
-#         collate_fn=collate_fn,
-#     )
-
-#     print("Data preparation complete.")
-
-#     return train_loader, test_loader, collate_fn
-
-def _count_blocks_in_chunk(args):
-    path, block_size = args
+def count_batches_in_chunk(args):
+    path, block_size, batch_size = args
     seqs = torch.load(path, map_location="cpu")
-    return sum(len(seq)//block_size for seq in seqs)
+    # count how many sequences have length <= block_size
+    total = 0
+    total += sum(1 for seq in seqs if len(seq) < block_size)
+    total += sum(len(seq) // block_size for seq in seqs if len(seq) >= block_size)
+    return total // batch_size
+    # return sum(len(seq)//block_size for seq in seqs)
 
 def iter_data_loader(config, tokenizer, cache_path):
     block_size = config["block_size"]
@@ -131,7 +103,7 @@ def iter_data_loader(config, tokenizer, cache_path):
     # build loaders (no shuffle flag on IterableDataset)
     train_loader = DataLoader(train_ds, batch_size=batch_size,
                               num_workers=6, pin_memory=True,
-                              collate_fn=collate_fn)
+                              collate_fn=collate_fn, drop_last=False)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size,
                               num_workers=6, pin_memory=True,
                               collate_fn=collate_fn)
@@ -148,18 +120,20 @@ def iter_data_loader(config, tokenizer, cache_path):
     print("Counting total blocks in train paths...")
     total_train_blocks = 0
     with ProcessPoolExecutor() as exe:
-        counts = exe.map(_count_blocks_in_chunk,
-                             ((p, block_size) for p in train_paths))
-        total_train_blocks = sum(counts)
-    print(f"Total blocks in train paths: {total_train_blocks}")
+        counts = exe.map(count_batches_in_chunk,
+                             ((p, block_size, batch_size) for p in train_paths))
+        total_train_batches = sum(counts)
+    # for p in train_paths:
+    #     total_train_blocks += _count_blocks_in_chunk((p, block_size))
+    print(f"Total blocks in train paths: {total_train_batches}")
 
     # count how many real samples in val_paths
     print("Counting total blocks in val paths...")
     total_val_blocks = 0
     with ProcessPoolExecutor() as exe:
-        counts = exe.map(_count_blocks_in_chunk,
-                             ((p, block_size) for p in val_paths))
-        total_val_blocks = sum(counts)
-    print(f"Total blocks in val paths: {total_val_blocks}")
+        counts = exe.map(count_batches_in_chunk,
+                             ((p, block_size, batch_size) for p in val_paths))
+        total_val_batches = sum(counts)
+    print(f"Total blocks in val paths: {total_val_batches}")
 
-    return train_loader, val_loader, test_loader, collate_fn, total_train_blocks, total_val_blocks
+    return train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches
