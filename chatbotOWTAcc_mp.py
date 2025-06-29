@@ -89,6 +89,8 @@ def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimi
                 scheduler.step()
                 optimizer.zero_grad()
 
+                loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
+
                 # loss_tensor = loss.detach()
                 # # Gather across processes: returns a tensor with one element per process
                 # loss_gathered = accelerator.gather(loss_tensor)
@@ -97,10 +99,10 @@ def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimi
                 # # accelerator.wait_for_everyone()
 
                 #   this does an all_reduce followed by division by world_size
-                reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
+                # reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
                 
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 1 * 60:  # 3 minutes in seconds
+                if current_time - last_checkpoint_time >= 10 * 60:
                     # if accelerator.is_main_process:
                     # save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     accelerator.wait_for_everyone()
@@ -108,7 +110,7 @@ def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimi
                     accelerator.save_state(output_dir=checkpoint_path)
                     last_checkpoint_time = current_time
                     if accelerator.is_main_process:
-                        print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {reduced_loss:.4f}")
+                        print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {loss:.4f}")
                     # Evaluate perplexity on a subset of the test set
                     test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
                     if accelerator.is_main_process:
@@ -116,7 +118,7 @@ def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimi
             # step += 1
         
         # if accelerator.is_main_process:
-        print(f"Epoch {epoch + 1} reduced loss: {reduced_loss:.4f}")
+        print(f"Epoch {epoch + 1} reduced loss: {loss:.4f}")
         accelerator.wait_for_everyone()
         accelerator.save_state(output_dir=checkpoint_path)
 
