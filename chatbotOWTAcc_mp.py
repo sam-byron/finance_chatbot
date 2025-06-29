@@ -1,9 +1,4 @@
 from multiprocessing import Pool
-# import multiprocessing as mp
-# import torch.multiprocessing as tmp
-# mp.set_start_method("spawn", force=True)
-# tmp.set_sharing_strategy("file_system")
-
 import os
 import math
 import random
@@ -53,7 +48,7 @@ def build_model(config):
     return model
 
 # @torch.compile(backend="inductor", fullgraph=False)
-def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, steps_per_epoch, val_steps_per_epoch):
+def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimizer, scheduler, config, checkpoint_path, tokenizer, scaler, num_cpu, start_epoch, collate_fn, steps_per_epoch, val_steps_per_epoch):
     num_epochs = config["num_epochs"]
     # scaler = torch.cuda.amp.GradScaler()
 
@@ -70,7 +65,7 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
     model.train()
     for epoch in range(start_epoch, num_epochs):
         model.train()
-        total_loss = 0
+        # total_loss = 0
 
         for step, batch in enumerate(
             tqdm(train_loader, 
@@ -80,17 +75,6 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
             )
             
             ):
-        # step = 0
-        # iterator = iter(train_loader)
-        # while True:
-        #     try:
-        #         batch = next(iterator)
-        #     except StopIteration:
-        #         # loader is exhausted
-        #         print(f"Data loader exhausted after {step} batches")
-        #         break
-        # for step, batch in enumerate(train_loader):
-        # for batch in islice(train_loader, steps_per_epoch):
             with accelerator.autocast():
                 outputs = model(
                     input_ids=batch["input_ids"],
@@ -116,7 +100,7 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
                 reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
                 
                 current_time = time.time()
-                if current_time - last_checkpoint_time >= 10 * 60:  # 3 minutes in seconds
+                if current_time - last_checkpoint_time >= 1 * 60:  # 3 minutes in seconds
                     # if accelerator.is_main_process:
                     # save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
                     accelerator.wait_for_everyone()
@@ -126,8 +110,9 @@ def train_loop(accelerator, model, train_loader, val_loader, test_texts, optimiz
                     if accelerator.is_main_process:
                         print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {reduced_loss:.4f}")
                     # Evaluate perplexity on a subset of the test set
-                    # test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
-                    # print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
+                    test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
+                    if accelerator.is_main_process:
+                        print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
             # step += 1
         
         # if accelerator.is_main_process:
@@ -192,17 +177,8 @@ def main():
     batch_size = config["batch_size"]
     pad_id = tokenizer.pad_token_id
     collate_fn = Collator(pad_id)
-    # empty_loader = DataLoader(
-    #     EmptyDataset(),
-    #     batch_size=batch_size,
-    #     shuffle=False,
-    #     num_workers=0,
-    #     pin_memory=True,
-    #     collate_fn=collate_fn,)
-    # train_loader = empty_loader
-    # test_loader  = empty_loader
 
-    test_texts = None
+    # test_texts = None
 
     # train_loader, test_loader, test_texts, collate_fn = data_loader(config, tokenizer, config["cache_path"])
     train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches = iter_data_loader(config, tokenizer, config["cache_path"])
@@ -214,12 +190,9 @@ def main():
         model, optimizer, train_loader, test_loader, val_loader
     )
 
-    # total_batch_size = config["batch_size"] * accelerator.num_processes
-    # steps_per_epoch   = total_train_blocks // total_batch_size
-    # total_steps       = steps_per_epoch * config["num_epochs"]
-
-    # val_steps_per_epoch   = total_val_blocks // total_batch_size
-    # val_total_steps       = val_steps_per_epoch * config["num_epochs"]
+    # model, optimizer, train_loader, test_loader = accelerator.prepare(
+    #     model, optimizer, train_loader, test_loader
+    # )
 
     scheduler = get_scheduler(
         "cosine",

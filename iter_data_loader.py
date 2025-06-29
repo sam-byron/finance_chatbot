@@ -81,8 +81,8 @@ def iter_data_loader(config, tokenizer, cache_path):
         raise RuntimeError(f"No cached chunks found in {cache_path}")
 
     # fraction splits (you can also pull these from config)
-    train_frac = config.get("train_frac", 0.89)
-    val_frac   = config.get("val_frac",   0.01)
+    train_frac = config.get("train_frac", 0.88)
+    val_frac   = config.get("val_frac",   0.02)
     assert train_frac + val_frac < 1.0, "train_frac + val_frac must be < 1.0"
     N = len(chunk_paths)
     idx1 = int(train_frac * N)
