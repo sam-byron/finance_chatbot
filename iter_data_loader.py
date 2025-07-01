@@ -102,14 +102,14 @@ def iter_data_loader(config, tokenizer, cache_path):
 
     # build loaders (no shuffle flag on IterableDataset)
     train_loader = DataLoader(train_ds, batch_size=batch_size,
-                              num_workers=6, pin_memory=True,
-                              collate_fn=collate_fn, drop_last=False)
+                              num_workers=8, pin_memory=True,
+                              collate_fn=collate_fn, prefetch_factor=3, drop_last=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size,
-                              num_workers=6, pin_memory=True,
-                              collate_fn=collate_fn)
+                              num_workers=8, pin_memory=True,
+                              collate_fn=collate_fn, prefetch_factor=3, drop_last=True)
     test_loader  = DataLoader(test_ds,  batch_size=batch_size,
-                              num_workers=6, pin_memory=True,
-                              collate_fn=collate_fn)
+                              num_workers=8, pin_memory=True,
+                              collate_fn=collate_fn, prefetch_factor=3, drop_last=True)
 
     print(f"Data preparation complete. "
           f"Train files: {len(train_paths)}, "

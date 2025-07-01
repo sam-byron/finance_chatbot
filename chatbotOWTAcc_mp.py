@@ -75,46 +75,47 @@ def train_loop(accelerator, model, train_loader, test_loader, val_loader, optimi
             )
             
             ):
-            with accelerator.autocast():
-                outputs = model(
-                    input_ids=batch["input_ids"],
-                    attention_mask=batch["attention_mask"],
-                    labels=batch["labels"],
-                )
-                loss = outputs.loss
-                # total_loss += loss.item()
+            with accelerator.accumulate(model):
+                with accelerator.autocast():
+                    outputs = model(
+                        input_ids=batch["input_ids"],
+                        attention_mask=batch["attention_mask"],
+                        labels=batch["labels"],
+                    )
+                    loss = outputs.loss
+                    # total_loss += loss.item()
 
-                accelerator.backward(loss)
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad()
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    scheduler.step()
+                    optimizer.zero_grad()
 
-                loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
+                    loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
 
-                # loss_tensor = loss.detach()
-                # # Gather across processes: returns a tensor with one element per process
-                # loss_gathered = accelerator.gather(loss_tensor)
-                # # Compute average loss across all GPUs
-                # avg_loss = loss_gathered.mean()
-                # # accelerator.wait_for_everyone()
+                    # loss_tensor = loss.detach()
+                    # # Gather across processes: returns a tensor with one element per process
+                    # loss_gathered = accelerator.gather(loss_tensor)
+                    # # Compute average loss across all GPUs
+                    # avg_loss = loss_gathered.mean()
+                    # # accelerator.wait_for_everyone()
 
-                #   this does an all_reduce followed by division by world_size
-                # reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
-                
-                current_time = time.time()
-                if current_time - last_checkpoint_time >= 10 * 60:
-                    # if accelerator.is_main_process:
-                    # save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
-                    accelerator.wait_for_everyone()
-                    # accelerator.save_model(model, checkpoint_path)
-                    accelerator.save_state(output_dir=checkpoint_path)
-                    last_checkpoint_time = current_time
-                    if accelerator.is_main_process:
-                        print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {loss:.4f}")
-                    # Evaluate perplexity on a subset of the test set
-                    test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
-                    if accelerator.is_main_process:
-                        print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
+                    #   this does an all_reduce followed by division by world_size
+                    # reduced_loss = accelerator.reduce(loss.detach(), reduction="mean")
+                    
+                    current_time = time.time()
+                    if current_time - last_checkpoint_time >= 30 * 60:
+                        # if accelerator.is_main_process:
+                        # save_checkpoint(epoch, model, optimizer, scheduler, scaler, checkpoint_path)
+                        accelerator.wait_for_everyone()
+                        # accelerator.save_model(model, checkpoint_path)
+                        accelerator.save_state(output_dir=checkpoint_path)
+                        last_checkpoint_time = current_time
+                        if accelerator.is_main_process:
+                            print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {loss:.4f}")
+                        # Evaluate perplexity on a subset of the test set
+                        test_subset_loss, perplexity = evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch)
+                        if accelerator.is_main_process:
+                            print(f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, Perplexity: {perplexity:.4f}")
             # step += 1
         
         # if accelerator.is_main_process:
@@ -156,9 +157,9 @@ def main():
     # Option A) Disable dispatching entirely by passing dispatch_batches=False
     dataloader_config = DataLoaderConfiguration(
     dispatch_batches=False,  # Each process fetches its own batch
-    split_batches=True       # Split fetched batches across processes
+    split_batches=True,       # Split fetched batches across processes
     )
-    accelerator = Accelerator(dataloader_config=dataloader_config)
+    accelerator = Accelerator(dataloader_config=dataloader_config, gradient_accumulation_steps=2)
 
     parser = argparse.ArgumentParser(description="Chatbot Training Script with Accelerate")
     parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
