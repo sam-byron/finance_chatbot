@@ -17,8 +17,7 @@ def build_model(config):
         loss_type="cross_entropy", # Original loss used to train GPT-2
     )
     model = GPT2LMHeadModel(model_config)
-    # Optimize the forward method using TorchDynamo.
-    # model.forward = torchdynamo.optimize(my_compiler)(model.forward)
+
     return model
 
 def load_checkpoint(checkpoint_path="checkpoint.pt"):
@@ -50,18 +49,6 @@ def start_chat_session(model_path, config):
     # Load the tokenizer using the model name from the config
     tokenizer = GPT2Tokenizer.from_pretrained(config["model_name"])
     tokenizer.pad_token = tokenizer.eos_token
-
-    # # Create the model configuration using the custom parameters
-    # model_config = GPT2Config(
-    #     vocab_size=config["vocab_size"],
-    #     n_positions=config["n_positions"],
-    #     n_embd=config["n_embed"],
-    #     n_layer=config["n_layer"],
-    #     n_head=config["n_head"],
-    # )
-
-    # # Initialize the model with the custom configuration
-    # model = GPT2LMHeadModel(model_config)\
     
     # Initialize the Accelerator
     accelerator = Accelerator()
@@ -111,26 +98,40 @@ def start_chat_session(model_path, config):
         input_ids = encoded["input_ids"].to(device)
         attention_mask = encoded["attention_mask"].to(device)
 
-        # Generate the bot's response
-        output_beam = model.module.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            # temperature=config["temperature"],
-            # top_p=config["top_p"],
-            num_beams=10,
-            pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-            no_repeat_ngram_size=3
+        gen_kwargs = dict(
+            max_new_tokens=120,
+            do_sample=True,          # turn on stochastic decoding
+            temperature=0.8,         # soften next-token distribution
+            top_p=0.92,              # nucleus sampling
+            top_k=0,                 # let top_p do the truncation
+            repetition_penalty=1.15, # discourages exact repeats
+            no_repeat_ngram_size=3,  # stop short loops
+            eos_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id,
         )
 
+        output = model.module.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
+
+        # # Generate the bot's response
+        # output_beam = model.module.generate(
+        #     input_ids=input_ids,
+        #     attention_mask=attention_mask,
+        #     max_new_tokens=max_new_tokens,
+        #     do_sample=False,
+        #     # temperature=config["temperature"],
+        #     # top_p=config["top_p"],
+        #     num_beams=5,
+        #     pad_token_id=tokenizer.eos_token_id,  # Silences the warning
+        #     no_repeat_ngram_size=5
+        # )
+
         # Decode the response
-        logp = sequence_logprob(model, output_beam, input_len=len(input_ids[0]))
-        response = tokenizer.decode(output_beam[0])
+        logp = sequence_logprob(model, output, input_len=len(input_ids[0]))
+        response = tokenizer.decode(output[0])
         print(f"\nlog-prob: {logp:.2f}")
 
         # Print the bot's response
-        print(f"Bot: {response}")
+        print(f"Prompt: {response}")
 
     
 
@@ -139,58 +140,11 @@ def start_chat_session(model_path, config):
     model = accelerator.load_state(checkpoint_path)
     print(model)
     # checkpoint = torch.load(model_path, map_location=device, weights_only=False)
-    # print(checkpoint)
     # model.load_state_dict(checkpoint["model_state_dict"])
-    # print(model)
-    # model = torch.nn.DataParallel(model)
     model = accelerator.unwrap_model(model)
     model.to(device)
     model.eval()
 
-    print("Chat session started (type 'quit' to exit)")
-
-
-    while True:
-        text = input("You: ")
-        if text.lower() == "quit":
-            break
-
-        usr_input = f"{text}\n"
-
-        # Define max_new_tokens as a variable for consistency
-        max_new_tokens = config.get("max_new_tokens", 50)  # Default to 50 if not specified
-
-        # Tokenize the conversation history
-        encoded = tokenizer(
-            usr_input,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=tokenizer.model_max_length,
-        )
-        input_ids = encoded["input_ids"].to(device)
-        attention_mask = encoded["attention_mask"].to(device)
-
-        # Generate the bot's response
-        output_beam = model.module.generate(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            # temperature=config["temperature"],
-            # top_p=config["top_p"],
-            num_beams=10,
-            pad_token_id=tokenizer.eos_token_id,  # Silences the warning
-            no_repeat_ngram_size=3
-        )
-
-        # Decode the response
-        logp = sequence_logprob(model, output_beam, input_len=len(input_ids[0]))
-        response = tokenizer.decode(output_beam[0])
-        print(f"\nlog-prob: {logp:.2f}")
-
-        # Print the bot's response
-        print(f"Bot: {response}")
 
 if __name__ == "__main__":
     # Parse command-line arguments
