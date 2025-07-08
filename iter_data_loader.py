@@ -81,8 +81,8 @@ def iter_data_loader(config, tokenizer, cache_path):
         raise RuntimeError(f"No cached chunks found in {cache_path}")
 
     # fraction splits (you can also pull these from config)
-    train_frac = config.get("train_frac", 0.88)
-    val_frac   = config.get("val_frac",   0.02)
+    train_frac = config.get("train_frac", 0.89)
+    val_frac   = config.get("val_frac",   0.01)
     assert train_frac + val_frac < 1.0, "train_frac + val_frac must be < 1.0"
     N = len(chunk_paths)
     idx1 = int(train_frac * N)
@@ -118,7 +118,6 @@ def iter_data_loader(config, tokenizer, cache_path):
     
     # count how many real samples in train_paths
     print("Counting total blocks in train paths...")
-    total_train_blocks = 0
     with ProcessPoolExecutor() as exe:
         counts = exe.map(count_batches_in_chunk,
                              ((p, block_size, batch_size) for p in train_paths))
@@ -129,7 +128,6 @@ def iter_data_loader(config, tokenizer, cache_path):
 
     # count how many real samples in val_paths
     print("Counting total blocks in val paths...")
-    total_val_blocks = 0
     with ProcessPoolExecutor() as exe:
         counts = exe.map(count_batches_in_chunk,
                              ((p, block_size, batch_size) for p in val_paths))
@@ -137,3 +135,46 @@ def iter_data_loader(config, tokenizer, cache_path):
     print(f"Total blocks in val paths: {total_val_batches}")
 
     return train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches
+
+
+def val_iter_data_loader(config, tokenizer, num_val_files=5):
+    block_size = config["block_size"]
+    batch_size = config["batch_size"]
+    cache_path = config["cache_path"]
+
+    # read all chunk paths
+    chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
+    print(f"Found {len(chunk_paths)} cached chunks.")
+    if not chunk_paths:
+        raise RuntimeError(f"No cached chunks found in {cache_path}")
+
+    chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
+    # shuffle the chunk paths
+    random.shuffle(chunk_paths)
+    
+    val_paths = chunk_paths[:num_val_files]
+
+    # create IterableDatasets
+    val_ds   = ChunkedIterableDataset(val_paths,   block_size=block_size)
+
+    pad_id     = tokenizer.pad_token_id
+    collate_fn = Collator(pad_id)
+
+    # build loaders (no shuffle flag on IterableDataset)
+    val_loader   = DataLoader(val_ds,   batch_size=batch_size,
+                              num_workers=8, pin_memory=True,
+                              collate_fn=collate_fn, prefetch_factor=3, drop_last=True)
+
+    print(f"Data preparation complete. "
+          f"Val files: {len(val_paths)}, ")
+    
+    # count how many real samples in val_paths
+    print("Counting total blocks in val paths...")
+    total_val_blocks = 0
+    with ProcessPoolExecutor() as exe:
+        counts = exe.map(count_batches_in_chunk,
+                             ((p, block_size, batch_size) for p in val_paths))
+        total_val_batches = sum(counts)
+    print(f"Total blocks in val paths: {total_val_batches}")
+
+    return val_loader, total_val_batches

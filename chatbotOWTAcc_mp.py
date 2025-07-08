@@ -6,13 +6,11 @@ from transformers import GPT2LMHeadModel, GPT2Config, AutoTokenizer, get_schedul
 from torch.optim import AdamW
 from tqdm import tqdm
 from accelerate import Accelerator, DataLoaderConfiguration
-from data_loader import data_loader
 from iter_data_loader import iter_data_loader
 from evaluation import evaluate_perplexity, create_test_subset
 import argparse
 import time
 import torch.distributed as dist
-from collator import Collator
 import traceback
 from datetime import timedelta
 import torch.distributed as dist
@@ -80,7 +78,7 @@ def train_loop(accelerator, model, train_loader, val_loader, optimizer, schedule
                     loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
                     
                     current_time = time.time()
-                    if current_time - last_checkpoint_time >= 30 * 60:
+                    if current_time - last_checkpoint_time >= 1 * 60:
                         accelerator.wait_for_everyone()
                         accelerator.save_state(output_dir=checkpoint_path)
                         last_checkpoint_time = current_time
