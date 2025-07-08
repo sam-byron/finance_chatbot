@@ -78,9 +78,9 @@ def train_loop(accelerator, model, train_loader, val_loader, optimizer, schedule
                     loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
                     
                     current_time = time.time()
-                    if current_time - last_checkpoint_time >= 1 * 60:
+                    if current_time - last_checkpoint_time >= 60 * 60:
                         accelerator.wait_for_everyone()
-                        accelerator.save_state(output_dir=checkpoint_path)
+                        accelerator.save_state(output_dir=checkpoint_path, safe_serialization=False)
                         last_checkpoint_time = current_time
                         if accelerator.is_main_process:
                             print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {loss:.4f}")
@@ -140,7 +140,7 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     tokenizer.pad_token = tokenizer.eos_token
 
-    train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches = iter_data_loader(config, tokenizer, config["cache_path"])
+    train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches, total_test_batches = iter_data_loader(config, tokenizer, config["cache_path"])
     model = build_model(config)
 
     optimizer = AdamW(model.parameters(), lr=config["learning_rate"], weight_decay=config["weight_decay"])

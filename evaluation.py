@@ -8,7 +8,7 @@ from accelerate import Accelerator
 from safetensors.torch import load_file
 import argparse
 import json
-from iter_data_loader import iter_data_loader, val_iter_data_loader
+from iter_data_loader import iter_data_loader
 import math
 
 
@@ -198,7 +198,7 @@ if __name__ == "__main__":
 
     model.load_state_dict(state_dict, strict=False)
 
-    val_loader, total_val_batches = val_iter_data_loader(config, tokenizer)
+    train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches, total_test_batches = iter_data_loader(config, tokenizer, config["cache_path"])
 
     # perplexity = eval_ppl(model, val_loader, device, total_val_batches)
     avg_nll, perplexity = evaluate_perplexity(model, val_loader, accelerator, total_val_batches)

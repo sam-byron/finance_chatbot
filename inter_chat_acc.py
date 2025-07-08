@@ -53,24 +53,31 @@ def start_chat_session(model_path, config):
     # Initialize the Accelerator
     accelerator = Accelerator()
     
-
     model = build_model(config)
 
     model = accelerator.prepare(model)
-    # Load the model weights from the checkpoint
-    # Load weights saved by Accelerate
-    state_dict = load_file("model_open_web_full/checkpoint.pt/model.safetensors")
 
-    # Step 3: Inspect keys if necessary
-    if "lm_head.weight" not in state_dict:
-        print("⚠️ WARNING: lm_head.weight missing from checkpoint!")
-        print("Keys available:", list(state_dict.keys())[:10])
+    # Load the checkpoint using Accelerator's method
+    print(f"Loading checkpoint from {model_path}")
+    accelerator.load_state(model_path)
+    # # Load the model weights from the checkpoint
+    # # Load weights saved by Accelerate
+    # state_dict = load_file("model_open_web_full/checkpoint.pt/pytorch_model.bin")
 
-    model.load_state_dict(state_dict, strict=False)
+    # # Step 3: Inspect keys if necessary
+    # if "lm_head.weight" not in state_dict:
+    #     print("⚠️ WARNING: lm_head.weight missing from checkpoint!")
+    #     print("Keys available:", list(state_dict.keys())[:10])
 
+    # model.load_state_dict(state_dict, strict=False)
+    # model.tie_weights() # <- critical
+
+    # Load the checkpoint using Accelerator's method
+    print(f"Loading checkpoint from {model_path}")
+    accelerator.load_state(model_path)
+    
     # checkpoint = torch.load(model_path, map_location=device)
     # model.load_state_dict(checkpoint["model_state_dict"])
-    model = torch.nn.DataParallel(model)
     model.to(device)
     model.eval()
 
@@ -110,7 +117,7 @@ def start_chat_session(model_path, config):
             pad_token_id=tokenizer.eos_token_id,
         )
 
-        output = model.module.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
+        output = model.generate(input_ids, attention_mask=attention_mask, **gen_kwargs)
 
         # # Generate the bot's response
         # output_beam = model.module.generate(

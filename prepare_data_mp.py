@@ -1,5 +1,6 @@
 import os
 import glob
+import pickle
 from datasets import load_dataset, Dataset
 from functools import partial
 from utils_mp import tokenize_sample, load_chunk, process_and_save_chunk
@@ -97,12 +98,89 @@ def prepare_data(config, tokenizer, cache_path):
         gc.collect()  # force garbage collection to free memory
     return 1
 
+def check_chunk_file(path):
+    """Check if a single chunk file is valid. Returns (path, is_valid, error_msg)"""
+    try:
+        torch.load(path, map_location="cpu")
+        return (path, True, None)
+    except Exception as e:  # Catch all exceptions instead of specific ones
+        return (path, False, str(e))
+
+def sanitize_chunks_fast(config, max_workers=None):
+    """Fast parallel sanitization using all available cores."""
+    cache_path = config["cache_path"]
+    chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
+    print(f"Found {len(chunk_paths)} chunk files to check...")
+    
+    if not chunk_paths:
+        print("No chunk files found!")
+        return 0, 0
+    
+    # Use all cores if not specified
+    if max_workers is None:
+        max_workers = min(64, mp.cpu_count())
+    
+    print(f"Using {max_workers} parallel workers...")
+    
+    corrupted_files = []
+    valid_files = []
+    
+    # Use ProcessPoolExecutor for true parallelism
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from tqdm import tqdm
+    
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_path = {executor.submit(check_chunk_file, path): path for path in chunk_paths}
+        
+        # Process results with progress bar
+        for future in tqdm(as_completed(future_to_path), total=len(chunk_paths), desc="Checking files"):
+            path, is_valid, error_msg = future.result()
+            
+            if is_valid:
+                valid_files.append(path)
+            else:
+                print(f"\nCorrupted file: {os.path.basename(path)} - {error_msg}")
+                corrupted_files.append(path)
+    
+    print(f"\nSanitization complete:")
+    print(f"  Valid files: {len(valid_files)}")
+    print(f"  Corrupted files: {len(corrupted_files)}")
+    
+    if corrupted_files:
+        print(f"\nRemoving {len(corrupted_files)} corrupted files...")
+        
+        # Sequential deletion is fast enough for small numbers
+        for path in corrupted_files:
+            try:
+                os.remove(path)
+                print(f"  Removed: {os.path.basename(path)}")
+            except OSError as e:
+                print(f"  Failed to remove {os.path.basename(path)}: {e}")
+        print("Cleanup complete!")
+    else:
+        print("No corrupted files found!")
+    
+    return len(valid_files), len(corrupted_files)
+
 def main():
-    parser = argparse.ArgumentParser(description="Chatbot Training Script with Accelerate")    
+    parser = argparse.ArgumentParser(description="Tokenize and prepare data for training")    
     parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
+    # sanitize flag
+    parser.add_argument(
+        "--sanitize",
+        action="store_true",
+        help="Sanitize chunks in the cache directory"
+    )
     args = parser.parse_args()
     with open(args.config_path, "r") as config_file:
         config = json.load(config_file)
+    if args.sanitize:
+        # Sanitize the chunks in the cache directory
+        print(f"Sanitizing chunks...")
+        valid_count, corrupted_count = sanitize_chunks_fast(config, 96)
+        print(f"Valid chunks: {valid_count}, Corrupted chunks removed: {corrupted_count}")
+        return
     tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
     tokenizer.pad_token = tokenizer.eos_token
     prepare_data(

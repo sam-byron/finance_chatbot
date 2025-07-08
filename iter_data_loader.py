@@ -1,3 +1,4 @@
+from datetime import datetime
 import math
 # from torch.utils.data import Dataset
 import os
@@ -21,6 +22,7 @@ from itertools import islice
 import json
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
+import pickle
 
 from torch.utils.data import IterableDataset, get_worker_info
 
@@ -38,8 +40,6 @@ class ChunkedIterableDataset(IterableDataset):
             # split paths across workers
             idx, num = worker_info.id, worker_info.num_workers
             paths = self.chunk_paths[idx::num]
-        # optional shuffle of chunk order
-        random.shuffle(self.chunk_paths)
         for path in paths:
             # load chunk (this yields a list of lists of ints)
             sequences = torch.load(path, map_location="cpu")
@@ -52,12 +52,6 @@ class ChunkedIterableDataset(IterableDataset):
                     for i in range(0, len(ids), self.block_size):
                         chunk = ids[i : i + self.block_size]
                         yield chunk
-                        # if len(chunk) <= self.block_size:
-                        #     yield chunk
-        
-        # Throw stop iteration exception when all chunks are exhausted
-        # raise StopIteration
-    
 
 
 def count_batches_in_chunk(args):
@@ -70,20 +64,33 @@ def count_batches_in_chunk(args):
     return total // batch_size
     # return sum(len(seq)//block_size for seq in seqs)
 
-def iter_data_loader(config, tokenizer, cache_path):
-    block_size = config["block_size"]
-    batch_size = config["batch_size"]
 
-    # read all chunk paths
+def create_and_cache_splits(config):
+    """Create train/val/test splits once and cache them."""
+    
+    cache_path = config["cache_path"]
+    # Create splits directory
+    splits_dir = Path(cache_path) / "splits"
+    splits_dir.mkdir(exist_ok=True)
+    
+    # Check if splits already exist
+    splits_file = splits_dir / "dataset_splits.json"
+    if splits_file.exists():
+        print("Dataset splits already exist, loading cached splits...")
+        with open(splits_file, 'r') as f:
+            splits = json.load(f)
+        return splits['train_paths'], splits['val_paths'], splits['test_paths']
+    
+    # Create new splits
+    print("Creating new dataset splits...")
     chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
-    print(f"Found {len(chunk_paths)} cached chunks.")
-    if not chunk_paths:
-        raise RuntimeError(f"No cached chunks found in {cache_path}")
-
-    # fraction splits (you can also pull these from config)
+    
+    # Shuffle once and save the order
+    random.shuffle(chunk_paths)
+    
     train_frac = config.get("train_frac", 0.89)
-    val_frac   = config.get("val_frac",   0.01)
-    assert train_frac + val_frac < 1.0, "train_frac + val_frac must be < 1.0"
+    val_frac   = config.get("val_frac", 0.01)
+    
     N = len(chunk_paths)
     idx1 = int(train_frac * N)
     idx2 = int((train_frac + val_frac) * N)
@@ -91,6 +98,34 @@ def iter_data_loader(config, tokenizer, cache_path):
     train_paths = chunk_paths[:idx1]
     val_paths   = chunk_paths[idx1:idx2]
     test_paths  = chunk_paths[idx2:]
+    
+    # Cache the splits
+    splits = {
+        'train_paths': train_paths,
+        'val_paths': val_paths,
+        'test_paths': test_paths,
+        'created_at': str(datetime.now()),
+        'config': {
+            'train_frac': train_frac,
+            'val_frac': val_frac,
+            'total_chunks': N
+        }
+    }
+    
+    with open(splits_file, 'w') as f:
+        json.dump(splits, f, indent=2)
+    
+    print(f"Cached dataset splits to {splits_file}")
+    print(f"Train: {len(train_paths)}, Val: {len(val_paths)}, Test: {len(test_paths)}")
+    
+    return train_paths, val_paths, test_paths
+
+def iter_data_loader(config, tokenizer, cache_path):
+    block_size = config["block_size"]
+    batch_size = config["batch_size"]
+
+    # Load or create cached splits
+    train_paths, val_paths, test_paths = create_and_cache_splits(config)
 
     # create IterableDatasets
     train_ds = ChunkedIterableDataset(train_paths, block_size=block_size)
@@ -116,65 +151,72 @@ def iter_data_loader(config, tokenizer, cache_path):
           f"Val files: {len(val_paths)}, "
           f"Test files: {len(test_paths)}")
     
-    # count how many real samples in train_paths
-    print("Counting total blocks in train paths...")
-    with ProcessPoolExecutor() as exe:
-        counts = exe.map(count_batches_in_chunk,
-                             ((p, block_size, batch_size) for p in train_paths))
-        total_train_batches = sum(counts)
-    # for p in train_paths:
-    #     total_train_blocks += _count_blocks_in_chunk((p, block_size))
-    print(f"Total blocks in train paths: {total_train_batches}")
+    # Cache batch counts too
+    counts_file = Path(cache_path) / "splits" / "batch_counts.json"
+    if counts_file.exists():
+        with open(counts_file, 'r') as f:
+            counts = json.load(f)
+        total_train_batches = counts['train_batches']
+        total_val_batches = counts['val_batches']
+        total_test_batches = counts['test_batches']
+        print(
+            f"Loaded cached batch counts:\n"
+            f"    train={total_train_batches},\n"
+            f"    val={total_val_batches},\n"
+            f"    test={total_test_batches}"
+        )
+    else:
+        # count how many real samples in train_paths
+        print("Counting total batches in train paths...")
+        with ProcessPoolExecutor() as exe:
+            counts = exe.map(count_batches_in_chunk,
+                                ((p, block_size, batch_size) for p in train_paths))
+            total_train_batches = sum(counts)
+        # for p in train_paths:
+        #     total_train_blocks += _count_blocks_in_chunk((p, block_size))
+        print(f"Total batches in train paths: {total_train_batches}")
 
-    # count how many real samples in val_paths
-    print("Counting total blocks in val paths...")
-    with ProcessPoolExecutor() as exe:
-        counts = exe.map(count_batches_in_chunk,
-                             ((p, block_size, batch_size) for p in val_paths))
-        total_val_batches = sum(counts)
-    print(f"Total blocks in val paths: {total_val_batches}")
+        # count how many real samples in val_paths
+        print("Counting total batches in val paths...")
+        with ProcessPoolExecutor() as exe:
+            counts = exe.map(count_batches_in_chunk,
+                                ((p, block_size, batch_size) for p in val_paths))
+            total_val_batches = sum(counts)
+        print(f"Total batches in val paths: {total_val_batches}")
 
-    return train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches
+        # count how many real samples in test_paths
+        print("Counting total batches in test paths...")
+        with ProcessPoolExecutor() as exe:
+            counts = exe.map(count_batches_in_chunk,
+                                ((p, block_size, batch_size) for p in test_paths))
+            total_test_batches = sum(counts)
+        print(f"Total batches in test paths: {total_test_batches}")
 
+        # Cache the counts
+        counts = {
+            'train_batches': total_train_batches,
+            'val_batches': total_val_batches,
+            'test_batches': total_test_batches,
+            'computed_at': str(datetime.now())
+        }
+        with open(counts_file, 'w') as f:
+            json.dump(counts, f, indent=2)
 
-def val_iter_data_loader(config, tokenizer, num_val_files=5):
-    block_size = config["block_size"]
-    batch_size = config["batch_size"]
-    cache_path = config["cache_path"]
+    return train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches, total_test_batches
 
-    # read all chunk paths
-    chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
-    print(f"Found {len(chunk_paths)} cached chunks.")
-    if not chunk_paths:
-        raise RuntimeError(f"No cached chunks found in {cache_path}")
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Iter Data Loader Script")
+    parser.add_argument("--config_path", type=str, required=True, help="Path to the configuration file")
+    args = parser.parse_args()
 
-    chunk_paths = sorted(glob.glob(os.path.join(cache_path, "chunk*.pt")))
-    # shuffle the chunk paths
-    random.shuffle(chunk_paths)
+    with open(args.config_path, "r") as config_file:
+        config = json.load(config_file)
+
+    tokenizer = AutoTokenizer.from_pretrained(config["model_name"])
+    tokenizer.pad_token = tokenizer.eos_token
+
+    train_loader, val_loader, test_loader, collate_fn, total_train_batches, total_val_batches, total_test_batches = iter_data_loader(config, tokenizer, config["cache_path"])
     
-    val_paths = chunk_paths[:num_val_files]
-
-    # create IterableDatasets
-    val_ds   = ChunkedIterableDataset(val_paths,   block_size=block_size)
-
-    pad_id     = tokenizer.pad_token_id
-    collate_fn = Collator(pad_id)
-
-    # build loaders (no shuffle flag on IterableDataset)
-    val_loader   = DataLoader(val_ds,   batch_size=batch_size,
-                              num_workers=8, pin_memory=True,
-                              collate_fn=collate_fn, prefetch_factor=3, drop_last=True)
-
-    print(f"Data preparation complete. "
-          f"Val files: {len(val_paths)}, ")
-    
-    # count how many real samples in val_paths
-    print("Counting total blocks in val paths...")
-    total_val_blocks = 0
-    with ProcessPoolExecutor() as exe:
-        counts = exe.map(count_batches_in_chunk,
-                             ((p, block_size, batch_size) for p in val_paths))
-        total_val_batches = sum(counts)
-    print(f"Total blocks in val paths: {total_val_batches}")
-
-    return val_loader, total_val_batches
+    print(f"Train loader: {total_train_batches} batches")
+    print(f"Val loader: {total_val_batches} batches")
+    print(f"Test loader: {total_test_batches} batches")
