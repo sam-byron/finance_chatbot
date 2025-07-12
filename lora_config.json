@@ -1,0 +1,19 @@
+{
+  "model_path": "~/engineering/ML/playground/fin_bot/finance_chatbot/model_vault/full_owt_run_gpt2_train_ds_only.pt",
+  "dataset_name": "vicgalle/alpaca-gpt4",
+  "output_dir": "./alpaca-lora-owt-gpt2",
+  "num_epochs": 3,
+  "lr": 2e-4,
+  "batch_size": 16,
+  "max_seq_len": 1024,
+  "lora_r": 16,
+  "lora_alpha": 32,
+  "lora_dropout": 0.1,
+  "target_modules": ["c_attn", "c_proj"],
+  "weight_decay": 0.01,
+  "warmup_ratio": 0.03,
+  "lr_scheduler_type": "cosine",
+  "max_grad_norm": 1.0,
+  "logging_steps": 50,
+  "num_workers": 4
+}
