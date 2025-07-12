@@ -10,6 +10,8 @@ import argparse
 import json
 from iter_data_loader import iter_data_loader
 import math
+import torch.nn.functional as F
+from datasets import load_dataset
 
 
 def build_model(config):
@@ -94,54 +96,197 @@ def eval_ppl(model, dataloader, device, val_steps_per_epoch):
 #     return avg_nll, perplexity
 
 
-def evaluate_perplexity(model, val_loader, accelerator, val_steps_per_epoch):
-    """Return (avg_nll, perplexity) on a *clean* validation loader."""
-    model.eval()
-    total_mean_loss = 0.0          # negative log-likelihood (sum over tokens)
-    total_tokens = 0         # number of *active* tokens
+# def evaluate_perplexity(model, val_loader, accelerator, total_val_batches):
+#     """Return (avg_nll, perplexity) on a *clean* validation loader."""
+#     model.eval()
+#     total_loss = 0.0          # negative log-likelihood (sum over tokens)
+#     # total_tokens = 0         # number of *active* tokens
 
+#     with torch.no_grad():
+#         for batch in tqdm(
+#             val_loader, 
+#             desc="Evaluating Val Set Loss and Perplexity",
+#             total=total_val_batches,
+#             leave=True,):
+
+#             # Move to correct device
+#             # batch = {k: v.to(accelerator.device) for k, v in batch.items()}
+#             input_ids      = batch["input_ids"]
+#             attention_mask = batch["attention_mask"]
+#             labels         = batch["labels"]
+
+#             # Forward pass : HuggingFace returns mean loss over active tokens
+#             outputs = model(input_ids=input_ids,
+#                             attention_mask=attention_mask,
+#                             labels=labels)
+#             loss = outputs.loss          # scalar on this process
+
+#             # How many tokens contributed to that mean?
+#             # token_count = (labels != -100).sum()
+
+#             # Gather across all processes
+#             # loss, token_count = accelerator.gather(
+#             #     (mean_loss, token_count)
+#             # )
+#             loss = accelerator.gather(loss)
+
+#             mean_loss = loss.mean()  # mean loss across all processes
+
+#             # Convert back to python numbers
+#             # token_count = token_count.sum().item()
+#             # nll = mean_loss.sum().item() * token_count   # undo the mean
+
+#             # total_nll    += nll
+#             total_loss += mean_loss  # sum the loss across processes
+#             # total_tokens += token_count
+#     # get number of devices
+#     # total_val_batches = accelerator.num_processes * len(val_loader)  # total number of batches across all processes
+#     avg_nll = total_loss / total_val_batches  # average loss over all batches
+#     perplexity = math.exp(avg_nll)
+#     return avg_nll, perplexity
+
+
+# def evaluate_perplexity(model, val_loader, accelerator, total_val_batches):
+#     """
+#     • Correctly weights every *token* (not batch) even if padding / ragged.
+#     • Works in DDP with Accelerate.
+#     Returns (avg_nll, ppl) where avg_nll is in nats/token.
+#     """
+#     model.eval()
+#     total_nll, total_tok = 0.0, 0
+
+#     with torch.no_grad():
+#         for batch in tqdm(
+#             val_loader,
+#             desc="Val-ppl",
+#             total=total_val_batches,
+#             disable=not accelerator.is_main_process,
+#         ):
+#             # batch = {k: v.to(accelerator.device) for k, v in batch.items()}
+#             logits = model(**batch, labels=batch["input_ids"]).logits[:, :-1]
+#             input_ids      = batch["input_ids"]
+#             labels = batch["input_ids"][:, 1:]
+#             mask   = batch["attention_mask"][:, 1:]   # align with labels
+
+#             log_probs = F.log_softmax(logits, dim=-1)
+#             token_logp = log_probs.gather(2, labels.unsqueeze(2)).squeeze(2)
+
+#             # sum negative log-likelihood over *active* tokens
+#             nll = -(token_logp * mask).sum()
+#             ntok = mask.sum()
+
+#             # gather across GPUs
+#             nll, ntok = accelerator.gather_for_metrics((nll, ntok))
+#             total_nll += nll.item()
+#             total_tok += ntok.item()
+
+#     avg_nll = total_nll / total_tok
+#     ppl = math.exp(avg_nll)
+#     return avg_nll, ppl
+
+# def evaluate_perplexity(model, val_loader, accelerator, total_val_batches):
+#     """
+#     Evaluate the model's perplexity on the validation set.
+#     Returns (avg_nll, perplexity) where avg_nll is in nats/token
+#     """
+
+#     test = load_dataset("wikitext", "wikitext-2-raw-v1", split="test")
+#     encodings = tokenizer("\n\n".join(test["text"]), return_tensors="pt")
+
+#     max_length = model.config.n_positions
+#     stride = 512
+#     seq_len = encodings.input_ids.size(1)
+
+#     nll_sum = 0.0
+#     n_tokens = 0
+#     prev_end_loc = 0
+#     for begin_loc in tqdm(range(0, seq_len, stride)):
+#         end_loc = min(begin_loc + max_length, seq_len)
+#         trg_len = end_loc - prev_end_loc  # may be different from stride on last loop
+#         input_ids = encodings.input_ids[:, begin_loc:end_loc].to(device)
+#         target_ids = input_ids.clone()
+#         target_ids[:, :-trg_len] = -100
+
+#         with torch.no_grad():
+#             outputs = model(input_ids, labels=target_ids)
+
+#             # loss is calculated using CrossEntropyLoss which averages over valid labels
+#             # N.B. the model only calculates loss over trg_len - 1 labels, because it internally shifts the labels
+#             # to the left by 1.
+#             neg_log_likelihood = outputs.loss
+
+#         # Accumulate the total negative log-likelihood and the total number of tokens
+#         num_valid_tokens = (target_ids != -100).sum().item()  # number of valid tokens in target_ids
+#         batch_size = target_ids.size(0)
+#         num_loss_tokens = num_valid_tokens - batch_size  # subtract batch_size due to internal label shift
+#         nll_sum += neg_log_likelihood * num_loss_tokens
+#         n_tokens += num_loss_tokens
+
+#         prev_end_loc = end_loc
+#         if end_loc == seq_len:
+#             break
+
+#     avg_nll = nll_sum / n_tokens  # average negative log-likelihood per token
+#     ppl = torch.exp(avg_nll)
+
+#     return avg_nll.item(), ppl.item()
+    
+
+def evaluate_perplexity(model, tokenizer, val_loader, accelerator, total_val_batches):
+    """
+    Evaluate the model's perplexity on the validation set using the provided val_loader.
+    Returns (avg_nll, perplexity) where avg_nll is in nats/token
+    """
+
+    model.eval()
+    total_nll = 0.0
+    total_tokens = 0
+    
     with torch.no_grad():
         for batch in tqdm(
             val_loader, 
-            desc="Evaluating Val Set Loss and Perplexity",
-            total=val_steps_per_epoch,
-            leave=True,):
-
-            # Move to correct device
-            batch = {k: v.to(accelerator.device) for k, v in batch.items()}
-            input_ids      = batch["input_ids"]
+            desc="Evaluating validation perplexity", 
+            total=total_val_batches,
+            disable=not accelerator.is_main_process
+        ):
+            # Move batch to correct device (handled by accelerator)
+            input_ids = batch["input_ids"]
             attention_mask = batch["attention_mask"]
-            labels         = batch["labels"]
-
-            # Forward pass : HuggingFace returns mean loss over active tokens
-            outputs = model(input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=labels)
-            mean_loss = outputs.loss          # scalar on this process
-
-            # How many tokens contributed to that mean?
-            # token_count = (labels != -100).sum()
-
-            # Gather across all processes
-            # loss, token_count = accelerator.gather(
-            #     (mean_loss, token_count)
-            # )
-            loss = accelerator.gather(
-                (mean_loss)
+            labels = batch["labels"]
+            
+            # Forward pass
+            outputs = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels
             )
-            mean_loss = loss.mean()  # average the mean loss across processes
-            # Convert back to python numbers
-            # token_count = token_count.sum().item()
-            # nll = mean_loss.sum().item() * token_count   # undo the mean
-
-            # total_nll    += nll
-            total_mean_loss += mean_loss
-            # total_tokens += token_count
-
-    avg_nll = total_mean_loss / val_steps_per_epoch  # average loss over all batches
-    perplexity = math.exp(avg_nll)
-    return avg_nll, perplexity
-
+            
+            # outputs.loss is already the mean CrossEntropyLoss over valid tokens
+            batch_loss = outputs.loss
+            
+            # Count valid tokens (exclude -100 labels and padding)
+            valid_token_mask = (labels != -100) & (labels != tokenizer.pad_token_id)
+            batch_token_count = valid_token_mask.sum()
+            
+            # Gather metrics across all processes
+            batch_loss, batch_token_count = accelerator.gather_for_metrics(
+                (batch_loss, batch_token_count)
+            )
+            
+            # Convert gathered tensors to scalars and accumulate
+            if accelerator.is_main_process:
+                # batch_loss is mean loss per token, so multiply by token count to get total NLL
+                batch_nll = batch_loss.sum() * batch_token_count.sum() / len(batch_loss)
+                total_nll += batch_nll.item()
+                total_tokens += batch_token_count.sum().item()
+    
+    # Only compute final metrics on main process
+    if accelerator.is_main_process:
+        avg_nll = total_nll / total_tokens if total_tokens > 0 else float('inf')
+        perplexity = torch.exp(torch.tensor(avg_nll)).item()
+        return avg_nll, perplexity
+    else:
+        return 0.0, 0.0
 
 
 def create_test_subset(test_texts, num_samples, block_size, batch_size, collate_fn, world_size, rank):

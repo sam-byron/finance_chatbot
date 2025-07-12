@@ -1,6 +1,6 @@
 {
     "block_size": 1024,
-    "batch_size": 22,
+    "batch_size": 33,
     "grad_accum": 2,
     "num_epochs": 6,
     "model_name": "gpt2",

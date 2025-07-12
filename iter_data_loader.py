@@ -88,8 +88,8 @@ def create_and_cache_splits(config):
     # Shuffle once and save the order
     random.shuffle(chunk_paths)
     
-    train_frac = config.get("train_frac", 0.89)
-    val_frac   = config.get("val_frac", 0.01)
+    train_frac = config.get("train_frac", 0.85)
+    val_frac   = config.get("val_frac", 0.05)
     
     N = len(chunk_paths)
     idx1 = int(train_frac * N)
