@@ -23,3 +23,16 @@ lm-eval --model hf \
 python3 inter_chat_acc.py  --config_path model_open_web_full.json --model_path model_open_web_full/checkpoint.pt
 
 python lora_fine_tuning.py --config_path lora_config.json
+
+**Usage examples:**
+
+1. **With your custom base model + LoRA adapters:**
+python inter_chat_lora.py \
+    --base_model_path ./model_vault/full_owt_run_gpt2_train_ds_only.pt \
+    --lora_model_path ./alpaca-lora-owt-gpt2 \
+    --config_path model_open_web_full.json
+
+2. **With just LoRA adapters (using standard GPT-2 as base):**
+python inter_chat_lora.py \
+    --lora_model_path ./alpaca-lora-owt-gpt2
+
