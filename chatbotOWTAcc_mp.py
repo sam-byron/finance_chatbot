@@ -14,6 +14,7 @@ import torch.distributed as dist
 import traceback
 from datetime import timedelta
 import torch.distributed as dist
+from accelerate.local_sgd import LocalSGD
 
 class EmptyDataset(Dataset):
     def __len__(self): 
@@ -51,65 +52,65 @@ def train_loop(accelerator, model, tokenizer, train_loader, val_loader, optimize
     for epoch in range(start_epoch, num_epochs):
         model.train()
         total_loss = 0
+        with LocalSGD(accelerator=accelerator, model=model, local_sgd_steps=8, enabled=True) as local_sgd:
+            for step, batch in enumerate(
+                tqdm(train_loader, 
+                desc=f"Epoch {epoch + 1}",
+                total=steps_per_epoch,
+                leave=False,
+                )
+                
+                ):
+                with accelerator.accumulate(model):
+                    with accelerator.autocast():
+                        outputs = model(
+                            input_ids=batch["input_ids"],
+                            attention_mask=batch["attention_mask"],
+                            labels=batch["labels"],
+                        )
+                        loss = outputs.loss
+                        # total_loss += loss.item()
 
-        for step, batch in enumerate(
-            tqdm(train_loader, 
-            desc=f"Epoch {epoch + 1}",
-            total=steps_per_epoch,
-            leave=False,
-            )
-            
-            ):
-            with accelerator.accumulate(model):
-                with accelerator.autocast():
-                    outputs = model(
-                        input_ids=batch["input_ids"],
-                        attention_mask=batch["attention_mask"],
-                        labels=batch["labels"],
-                    )
-                    loss = outputs.loss
-                    # total_loss += loss.item()
+                        accelerator.backward(loss)
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
 
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    scheduler.step()
-                    optimizer.zero_grad()
+                        loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
+                        total_loss += loss.item()
 
-                    loss = accelerator.gather(loss).mean()  # Gather and average the loss across all processes
-                    total_loss += loss.item()
-
-                    # Print total loss so far right after tqdm progress bar but without moving the command line cursor
-                    # if accelerator.is_main_process:
-                    #     tqdm.write(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}")
-
-
-
-                        # tqdm.write(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}")
-                        # print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}", end='\r')
-                    
-                    current_time = time.time()
-                    if current_time - last_checkpoint_time >= 30 * 60:
-                        accelerator.wait_for_everyone()
-                        if accelerator.is_main_process:
-                            accelerator.save_state(output_dir=checkpoint_path, safe_serialization=False)
-                            unwrapped_model = accelerator.unwrap_model(model)
-                            unwrapped_model.save_pretrained(checkpoint_path)
-                        accelerator.wait_for_everyone()
-                        last_checkpoint_time = current_time
-                        if accelerator.is_main_process:
-                            print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {total_loss/(step+1):.4f}")
-                        # # Evaluate perplexity on a subset of the test set
-                        # test_subset_loss, perplexity = evaluate_perplexity(model, tokenizer, val_loader, accelerator, val_steps_per_epoch)
+                        # Print total loss so far right after tqdm progress bar but without moving the command line cursor
                         # if accelerator.is_main_process:
-                        #     tqdm.write(
-                        #         f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, "
-                        #         f"Perplexity: {perplexity:.4f}"
-                        #     )
-        
-        # if accelerator.is_main_process:
-        print(f"Epoch {epoch + 1} reduced loss: {loss:.4f}")
-        accelerator.wait_for_everyone()
-        accelerator.save_state(output_dir=checkpoint_path)
+                        #     tqdm.write(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}")
+
+
+
+                            # tqdm.write(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}")
+                            # print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Loss: {total_loss/(step+1):.4f}", end='\r')
+                        
+                        current_time = time.time()
+                        if current_time - last_checkpoint_time >= 30 * 60:
+                            accelerator.wait_for_everyone()
+                            if accelerator.is_main_process:
+                                accelerator.save_state(output_dir=checkpoint_path, safe_serialization=False)
+                                unwrapped_model = accelerator.unwrap_model(model)
+                                unwrapped_model.save_pretrained(checkpoint_path)
+                            accelerator.wait_for_everyone()
+                            last_checkpoint_time = current_time
+                            if accelerator.is_main_process:
+                                print(f"Epoch {epoch + 1}, Step {step + 1}/{steps_per_epoch}, Reduced Loss: {total_loss/(step+1):.4f}")
+                            # # Evaluate perplexity on a subset of the test set
+                            # test_subset_loss, perplexity = evaluate_perplexity(model, tokenizer, val_loader, accelerator, val_steps_per_epoch)
+                            # if accelerator.is_main_process:
+                            #     tqdm.write(
+                            #         f"Epoch {epoch + 1} Subset test Loss: {test_subset_loss:.4f}, "
+                            #         f"Perplexity: {perplexity:.4f}"
+                            #     )
+            
+            # if accelerator.is_main_process:
+            print(f"Epoch {epoch + 1} reduced loss: {loss:.4f}")
+            accelerator.wait_for_everyone()
+            accelerator.save_state(output_dir=checkpoint_path)
 
 
 def main():

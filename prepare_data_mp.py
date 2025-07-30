@@ -79,7 +79,7 @@ def prepare_data(config, tokenizer, cache_path):
     chunk_idx = 0
     # chunks = chunked(stream, chunk_size)
     
-    pool = Pool(processes=min(mp.cpu_count(), 32))
+    pool = Pool(processes=min(mp.cpu_count(), 96))
     # pool = Pool(processes=min(mp.cpu_count(), 96))
     # now iterate batches of size chunk_size in parallel
     for chunk_idx, chunk in enumerate(dataloader):
@@ -118,7 +118,7 @@ def sanitize_chunks_fast(config, max_workers=None):
     
     # Use all cores if not specified
     if max_workers is None:
-        max_workers = min(64, mp.cpu_count())
+        max_workers = min(96, mp.cpu_count())
     
     print(f"Using {max_workers} parallel workers...")
     

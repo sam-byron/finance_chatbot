@@ -19,6 +19,11 @@ lm-eval --model hf \
         --batch_size 8 \
         --device cuda
 
+lm-eval --model hf \
+        --model_args "pretrained=./model_open_web_full/checkpoint.pt,tokenizer=gpt2" \
+        --tasks blimp \
+        --batch_size 8 \
+        --device cuda
 
 python3 inter_chat_acc.py  --config_path model_open_web_full.json --model_path model_open_web_full/checkpoint.pt
 
