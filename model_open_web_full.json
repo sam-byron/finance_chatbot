@@ -3,7 +3,7 @@
     "batch_size": 6,
     "grad_accum": 2,
     "num_epochs": 6,
-    "model_name": "gpt2",
+    "model_name": "bert-base-uncased",
     "vocab_size": 50257,
     "n_positions": 1024,
     "n_embed": 768,
